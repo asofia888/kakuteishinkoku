@@ -917,8 +917,18 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
 
   const openFile = (f: StoredFile) => {
     const url = URL.createObjectURL(f.blob);
-    window.open(url, '_blank');
-    // 表示に使い終わったObjectURLは解放する
+    // SVG等はアプリと同一オリジンでスクリプトが実行され得るため、
+    // ブラウザで安全に表示できる形式だけ新規タブで開き、それ以外はダウンロードにする
+    const safeToPreview = /^(image\/(png|jpe?g|gif|webp|avif|bmp)|application\/pdf)$/.test(f.type);
+    if (safeToPreview) {
+      window.open(url, '_blank');
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = f.name;
+      a.click();
+    }
+    // 使い終わったObjectURLは解放する
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 

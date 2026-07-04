@@ -228,6 +228,7 @@ function sanitizeInvoice(raw: unknown, seenIds: Set<string>): Invoice | null {
     withholding: i.withholding === true,
     notes: str(i.notes),
     ...(linked.length > 0 ? { linkedTxIds: linked } : {}),
+    ...(date(i.paidDate) ? { paidDate: date(i.paidDate) } : {}),
     createdAt:
       typeof i.createdAt === 'number' && Number.isFinite(i.createdAt) ? i.createdAt : Date.now(),
   };

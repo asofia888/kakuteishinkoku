@@ -77,6 +77,31 @@ export default function BooksPage() {
     [store.transactions, year],
   );
 
+  // 期首残高が前年末の残高と食い違っていないか(前年の帳簿を後から修正すると起きる)
+  const openingMismatch = useMemo(() => {
+    if (!opening) return false;
+    const hasPrev =
+      store.openingBalances.some((ob) => ob.year === year - 1) ||
+      transactionsOfYear(store.transactions, year - 1).length > 0;
+    if (!hasPrev) return false;
+    const prevOpening = store.openingBalances.find((ob) => ob.year === year - 1);
+    const prevBs = buildBalanceSheet(
+      store.transactions,
+      year - 1,
+      prevOpening,
+      store.assets,
+      store.inventories,
+    );
+    const carry = carryForwardOpening(prevBs);
+    return (
+      carry.cash !== opening.cash ||
+      carry.bank !== opening.bank ||
+      carry.receivable !== opening.receivable ||
+      carry.card !== opening.card ||
+      carry.payable !== opening.payable
+    );
+  }, [opening, store.openingBalances, store.transactions, store.assets, store.inventories, year]);
+
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
   }
@@ -144,6 +169,14 @@ export default function BooksPage() {
             setMessage(`${year}年の期首残高を保存しました。貸借対照表に反映されています。`);
           }}
         />
+
+        {openingMismatch && (
+          <Alert tone="warning">
+            {year}年の期首残高が<strong>前年末の貸借対照表の残高と一致していません</strong>。
+            前年の取引を後から修正した場合に起きます。「前年末の残高から自動設定」を押すと揃えられます
+            (意図的にずらしている場合はこのままで構いません)。
+          </Alert>
+        )}
 
         <InventoryCard
           key={`inv-${year}-${inventoryAmount(store.inventories, year - 1)}-${inventoryAmount(store.inventories, year)}`}

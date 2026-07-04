@@ -17,6 +17,7 @@ import { buildBackupJson, parseBackupJson } from '@/lib/backup';
 import { downloadText, transactionsToCsv } from '@/lib/csv';
 import { deleteOrphans, formatBytes, totalUsage } from '@/lib/files';
 import { today, yen } from '@/lib/format';
+import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
 
 export default function DashboardPage() {
@@ -41,6 +42,20 @@ export default function DashboardPage() {
     () => monthlyBreakdown(store.transactions, year, store.assets, store.inventories),
     [store.transactions, year, store.assets, store.inventories],
   );
+
+  // 未回収の請求書(売掛計上済み・入金マークなし)
+  const unpaidInvoices = useMemo(() => {
+    const txIds = new Set(store.transactions.map((t) => t.id));
+    const t = today();
+    const list = store.invoices.filter(
+      (inv) => !inv.paidDate && (inv.linkedTxIds ?? []).some((id) => txIds.has(id)),
+    );
+    return {
+      count: list.length,
+      overdue: list.filter((inv) => inv.dueDate && inv.dueDate < t).length,
+      total: list.reduce((s, inv) => s + computeInvoiceTotals(inv).billedAmount, 0),
+    };
+  }, [store.invoices, store.transactions]);
 
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
@@ -182,6 +197,20 @@ export default function DashboardPage() {
               🗓 <strong className="mx-1">{year + 1}年1月に入金された売上が{slip.length}件(合計 {yen(slipTotal)})</strong>
               あります。{year}年12月までの仕事の対価であれば、正しくは{year}年分の売上です(期ズレ)。
               12月付(発生日)の売上として手入力し、1月の入金行は「対象外(プライベート)」に変更してください。
+            </Alert>
+          )}
+
+          {unpaidInvoices.count > 0 && (
+            <Alert tone={unpaidInvoices.overdue > 0 ? 'warning' : 'info'}>
+              💰 <strong className="mx-1">未回収の請求書が{unpaidInvoices.count}件(合計 {yen(unpaidInvoices.total)})</strong>
+              あります
+              {unpaidInvoices.overdue > 0 && (
+                <>
+                  (うち<strong className="text-rose-700">{unpaidInvoices.overdue}件は支払期限超過</strong>)
+                </>
+              )}
+              。<Link href="/invoices" className="font-medium text-blue-700 underline">請求書発行</Link>
+              ページで入金状況をご確認ください。
             </Alert>
           )}
 

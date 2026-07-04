@@ -145,6 +145,8 @@ export interface Invoice {
   notes: string;
   /** 売掛金として計上した取引ID(存在チェックで「計上済み」を判定) */
   linkedTxIds?: string[];
+  /** 入金確認日(消し込み)。設定すると未回収一覧から外れる */
+  paidDate?: string;
   createdAt: number;
 }
 

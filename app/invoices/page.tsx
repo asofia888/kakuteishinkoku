@@ -52,6 +52,16 @@ export default function InvoicesPage() {
   /** 売掛計上済みか(紐付いた取引が現存するか) */
   const isRegistered = (inv: Invoice) => (inv.linkedTxIds ?? []).some((id) => txIds.has(id));
 
+  // 未回収(売掛計上済み・入金マークなし)の集計
+  const unpaid = useMemo(() => {
+    const t = today();
+    const list = invoices.filter((inv) => isRegistered(inv) && !inv.paidDate);
+    const overdue = list.filter((inv) => inv.dueDate && inv.dueDate < t);
+    const total = list.reduce((s, inv) => s + computeInvoiceTotals(inv).billedAmount, 0);
+    return { list, overdue, total };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoices, txIds]);
+
   const register = (inv: Invoice) => {
     const totals = computeInvoiceTotals(inv);
     if (
@@ -87,6 +97,18 @@ export default function InvoicesPage() {
         }} />
 
         {message && <Alert tone="success">{message}</Alert>}
+
+        {unpaid.list.length > 0 && (
+          <Alert tone={unpaid.overdue.length > 0 ? 'warning' : 'info'}>
+            <strong>未回収の請求書が{unpaid.list.length}件(合計 {yen(unpaid.total)})</strong>あります
+            {unpaid.overdue.length > 0 && (
+              <>
+                。うち<strong className="text-rose-700">{unpaid.overdue.length}件は支払期限を過ぎています</strong>
+              </>
+            )}
+            。入金を確認したら「入金済み」にし、銀行明細の入金行は取引一覧で「売掛金の回収」にしてください。
+          </Alert>
+        )}
 
         {draft ? (
           <InvoiceForm
@@ -143,6 +165,8 @@ export default function InvoicesPage() {
                   {invoices.map((inv) => {
                     const totals = computeInvoiceTotals(inv);
                     const registered = isRegistered(inv);
+                    const overdue =
+                      registered && !inv.paidDate && !!inv.dueDate && inv.dueDate < today();
                     return (
                       <tr key={inv.id} className="border-b border-slate-100 hover:bg-slate-50/60">
                         <td className="tabular py-2 pr-2 font-medium whitespace-nowrap">{inv.number}</td>
@@ -159,9 +183,20 @@ export default function InvoicesPage() {
                           )}
                         </td>
                         <td className="px-2 py-2 whitespace-nowrap">
-                          {registered ? (
-                            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
-                              ✓ 売掛計上済み
+                          {inv.paidDate ? (
+                            <span
+                              className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-700"
+                              title={`入金確認日: ${dateLabel(inv.paidDate)}`}
+                            >
+                              💰 入金済み
+                            </span>
+                          ) : registered ? (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                overdue ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                              }`}
+                            >
+                              {overdue ? '⚠ 期限超過(未回収)' : '✓ 売掛中(未回収)'}
                             </span>
                           ) : (
                             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500">
@@ -182,6 +217,31 @@ export default function InvoicesPage() {
                                 onClick={() => register(inv)}
                               >
                                 売掛計上
+                              </button>
+                            )}
+                            {registered && !inv.paidDate && (
+                              <button
+                                type="button"
+                                className={btn.small}
+                                title="入金を確認したらマークします(帳簿の消し込みは入金行を「売掛金の回収」に)"
+                                onClick={() => {
+                                  store.updateInvoice(inv.id, { paidDate: today() });
+                                  setMessage(
+                                    `請求書 ${inv.number} を入金済みにしました。銀行明細の入金行は取引一覧で「売掛金の回収」にしてください。`,
+                                  );
+                                }}
+                              >
+                                入金済みに
+                              </button>
+                            )}
+                            {inv.paidDate && (
+                              <button
+                                type="button"
+                                className={btn.small}
+                                title="入金済みマークを取り消す"
+                                onClick={() => store.updateInvoice(inv.id, { paidDate: undefined })}
+                              >
+                                入金取消
                               </button>
                             )}
                             <button
@@ -208,6 +268,7 @@ export default function InvoicesPage() {
                                   dueDate: '',
                                   items: inv.items.map((i) => ({ ...i, id: uid() })),
                                   linkedTxIds: undefined,
+                                  paidDate: undefined,
                                 });
                               }}
                             >
