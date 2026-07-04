@@ -71,6 +71,25 @@ export default function AssetsPage() {
     [store.assets, year],
   );
 
+  // 少額減価償却資産の特例は年合計300万円まで(超過分は適用不可)
+  const immediateTotal = useMemo(
+    () =>
+      acquisitionsInYear(store.assets, year)
+        .filter((a) => a.method === 'immediate')
+        .reduce((s, a) => s + a.cost, 0),
+    [store.assets, year],
+  );
+
+  // 償却資産税(固定資産税)の申告対象になりうる資産の取得価額合計(目安)。
+  // 定額法・少額特例は対象、一括償却資産(3年均等)と繰延資産は対象外
+  const shokyakuShisanCost = useMemo(
+    () =>
+      store.assets
+        .filter((a) => (a.method === 'straight' || a.method === 'immediate') && !a.disposedDate)
+        .reduce((s, a) => s + a.cost, 0),
+    [store.assets],
+  );
+
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
   }
@@ -100,6 +119,14 @@ export default function AssetsPage() {
 
         {message && <Alert tone="success">{message}</Alert>}
 
+        {immediateTotal > 3_000_000 && (
+          <Alert tone="warning">
+            {year}年の<strong>少額減価償却資産の特例(全額計上)の合計が {yen(immediateTotal)}</strong>{' '}
+            になり、上限の<strong>年300万円を超えています</strong>。超過分の資産には特例を適用できません。
+            300万円に収まるよう資産を選び、超過分は「定額法」(取得価額20万円未満なら「一括償却」も可)に変更してください。
+          </Alert>
+        )}
+
         {registerCostTotal !== purchaseTxTotal && (registerCostTotal > 0 || purchaseTxTotal > 0) && (
           <Alert tone="warning">
             {year}年の台帳の取得価額合計は <strong>{yen(registerCostTotal)}</strong>
@@ -109,7 +136,7 @@ export default function AssetsPage() {
           </Alert>
         )}
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard label={`${year}年の償却費(全額)`} value={yen(totals.total)} />
           <StatCard
             label={`${year}年の必要経費算入額`}
@@ -118,7 +145,23 @@ export default function AssetsPage() {
             tone="primary"
           />
           <StatCard label={`${year}年末の未償却残高合計`} value={yen(bookTotal)} sub="貸借対照表の「減価償却資産」" />
+          <StatCard
+            label={`${year}年の少額特例 合計(上限300万円)`}
+            value={yen(immediateTotal)}
+            sub={immediateTotal > 3_000_000 ? '⚠ 上限超過 — 超過分は適用不可' : '青色申告の少額減価償却資産の特例'}
+            tone={immediateTotal > 3_000_000 ? 'default' : 'muted'}
+          />
         </div>
+
+        {shokyakuShisanCost >= 1_500_000 && (
+          <Alert tone="info">
+            償却資産税の対象になりうる資産(定額法・少額特例)の取得価額合計が{' '}
+            <strong>{yen(shokyakuShisanCost)}</strong> です。課税標準(評価額)が
+            <strong>150万円以上</strong>になると固定資産税(償却資産)が課税されます(毎年1月末までに市区町村へ
+            償却資産申告)。評価額は取得価額より小さくなるためこの金額は目安ですが、申告の要否をご確認ください。
+            ※一括償却資産(3年均等)と繰延資産は償却資産税の対象外です。
+          </Alert>
+        )}
 
         {draft && (
           <AssetForm
@@ -291,6 +334,11 @@ export default function AssetsPage() {
             償却費は毎年12月31日付の決算整理仕訳(借方: 減価償却費 / 貸方: 減価償却資産)として帳簿・貸借対照表に自動反映されます。
             事業割合が100%未満の場合、家事分は事業主貸になります。除却・売却した資産は除却日を登録すると償却が止まります
             (売却損益・除却損は自動計上しません。事業用資産の売却は譲渡所得になるため、税理士等にご確認ください)。
+            <br />
+            ※<strong className="text-slate-500">少額特例は年合計300万円まで</strong>。また、定額法・少額特例の資産は
+            <strong className="text-slate-500">償却資産税(固定資産税)の申告対象</strong>
+            です(毎年1月末・市区町村へ。課税標準150万円未満は課税されません)。一括償却資産(3年均等)は対象外のため、
+            10〜20万円の資産は一括償却を選ぶと償却資産税がかかりません。
           </p>
         </Card>
       </div>
@@ -320,7 +368,7 @@ function AssetForm({
     cost > 0 && cost < DEPRECIATION_MIN
       ? '10万円未満は台帳への登録は不要です(消耗品費などでそのまま経費にできます)。'
       : cost < 200000
-        ? '10万〜20万円未満: 一括償却(3年均等)か、青色申告なら少額特例(全額)も選べます。'
+        ? '10万〜20万円未満: 一括償却(3年均等・償却資産税の対象外)か、青色申告なら少額特例(全額・年合計300万円まで)を選べます。'
         : cost < 300000
           ? '20万〜30万円未満: 定額法か、青色申告なら少額特例(全額・年合計300万円まで)を選べます。'
           : '30万円以上: 定額法で耐用年数にわたって償却します。';

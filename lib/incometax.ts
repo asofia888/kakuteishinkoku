@@ -24,8 +24,28 @@ export function incomeTaxBase(taxable: number): number {
   return Math.floor(taxable * b.rate - b.deduction);
 }
 
-/** 基礎控除(合計所得金額による逓減) */
-export function basicDeduction(totalIncome: number): number {
+/**
+ * 基礎控除(合計所得金額による)。令和7年度税制改正に対応:
+ * - 2024年分まで: 48万円(合計所得2,400万円超は逓減)
+ * - 2025年分以降: 58万円(合計所得2,350万円以下)。合計所得132万円以下は95万円(恒久)
+ * - 2025・2026年分のみ: 中間所得層への時限上乗せ(88万/68万/63万円)
+ */
+export function basicDeduction(totalIncome: number, year: number): number {
+  if (year <= 2024) {
+    if (totalIncome <= 24_000_000) return 480_000;
+    if (totalIncome <= 24_500_000) return 320_000;
+    if (totalIncome <= 25_000_000) return 160_000;
+    return 0;
+  }
+  // 令和7年(2025年)分以降
+  if (totalIncome <= 1_320_000) return 950_000;
+  if (year <= 2026) {
+    // 令和7・8年分のみの時限上乗せ
+    if (totalIncome <= 3_360_000) return 880_000;
+    if (totalIncome <= 4_890_000) return 680_000;
+    if (totalIncome <= 6_550_000) return 630_000;
+  }
+  if (totalIncome <= 23_500_000) return 580_000;
   if (totalIncome <= 24_000_000) return 480_000;
   if (totalIncome <= 24_500_000) return 320_000;
   if (totalIncome <= 25_000_000) return 160_000;
@@ -86,7 +106,7 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
     0,
     Math.min(d.donations, Math.floor(totalIncome * 0.4)) - 2_000,
   );
-  const basic = basicDeduction(totalIncome);
+  const basic = basicDeduction(totalIncome, d.year);
   const life = Math.min(120_000, d.lifeInsurance);
   const earthquake = Math.min(50_000, d.earthquakeInsurance);
 
