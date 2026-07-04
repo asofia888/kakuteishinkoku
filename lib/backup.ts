@@ -3,6 +3,7 @@ import {
   AppData,
   DEFAULT_ISSUER,
   DEFAULT_TAX_SETTINGS,
+  DeductionEntry,
   FixedAsset,
   FundId,
   Invoice,
@@ -23,7 +24,7 @@ import {
  */
 
 const APP_TAG = 'shinkoku-snap';
-const BACKUP_VERSION = 5;
+const BACKUP_VERSION = 6;
 
 const FUND_IDS: FundId[] = ['bank', 'cash', 'card', 'receivable', 'payable', 'owner'];
 const TAX_CATEGORIES: TaxCategory[] = ['taxable10', 'taxable8', 'exempt', 'none'];
@@ -100,6 +101,12 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     const inv = sanitizeInventory(item);
     if (inv) invByYear.set(inv.year, inv);
   }
+  // 所得控除も年ごとに1件
+  const dedByYear = new Map<number, DeductionEntry>();
+  for (const item of Array.isArray(obj.deductions) ? obj.deductions : []) {
+    const ded = sanitizeDeduction(item);
+    if (ded) dedByYear.set(ded.year, ded);
+  }
   return {
     transactions,
     rules,
@@ -110,6 +117,7 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     issuer: sanitizeIssuer(obj.issuer),
     assets,
     inventories: [...invByYear.values()].sort((a, b) => a.year - b.year),
+    deductions: [...dedByYear.values()].sort((a, b) => a.year - b.year),
   };
 }
 
@@ -141,6 +149,9 @@ function sanitizeTransaction(raw: unknown, seenIds: Set<string>): Transaction | 
       typeof t.createdAt === 'number' && Number.isFinite(t.createdAt) ? t.createdAt : Date.now(),
     // v2以前のデータには決済手段がない。ほとんどが銀行明細のため普通預金として引き継ぐ
     fund: FUND_IDS.includes(t.fund as FundId) ? (t.fund as FundId) : 'bank',
+    ...(FUND_IDS.includes(t.counterFund as FundId)
+      ? { counterFund: t.counterFund as FundId }
+      : {}),
     ...(TAX_CATEGORIES.includes(t.taxCategory as TaxCategory)
       ? { taxCategory: t.taxCategory as TaxCategory }
       : {}),
@@ -244,18 +255,59 @@ function sanitizeFixedAsset(raw: unknown, seenIds: Set<string>): FixedAsset | nu
     typeof a.disposedDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.disposedDate)
       ? a.disposedDate
       : '';
+  // 繰延資産の任意償却履歴(年ごとに1件へ寄せる)
+  const deferredByYear = new Map<number, { year: number; amount: number }>();
+  for (const item of Array.isArray(a.deferredDep) ? a.deferredDep : []) {
+    if (!item || typeof item !== 'object') continue;
+    const y = (item as { year?: unknown }).year;
+    const amt = (item as { amount?: unknown }).amount;
+    if (typeof y !== 'number' || !Number.isInteger(y) || y < 2000 || y > 2100) continue;
+    if (typeof amt !== 'number' || !Number.isFinite(amt) || amt <= 0) continue;
+    deferredByYear.set(y, { year: y, amount: Math.round(amt) });
+  }
+  const deferredDep = [...deferredByYear.values()].sort((x, y) => x.year - y.year);
   return {
     id,
     name: a.name.trim(),
     acquiredDate: a.acquiredDate,
     cost: Math.round(a.cost),
-    method: a.method === 'lump3' || a.method === 'immediate' ? a.method : 'straight',
+    method:
+      a.method === 'lump3' || a.method === 'immediate' || a.method === 'deferred'
+        ? a.method
+        : 'straight',
     usefulLife,
     businessRatio,
     ...(memo ? { memo } : {}),
     ...(disposed ? { disposedDate: disposed } : {}),
+    ...(deferredDep.length > 0 ? { deferredDep } : {}),
     createdAt:
       typeof a.createdAt === 'number' && Number.isFinite(a.createdAt) ? a.createdAt : Date.now(),
+  };
+}
+
+function sanitizeDeduction(raw: unknown): DeductionEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw as Partial<DeductionEntry>;
+  if (typeof d.year !== 'number' || !Number.isInteger(d.year) || d.year < 2000 || d.year > 2100) {
+    return null;
+  }
+  const amount = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
+  return {
+    year: d.year,
+    socialInsurance: amount(d.socialInsurance),
+    mutualAid: amount(d.mutualAid),
+    lifeInsurance: amount(d.lifeInsurance),
+    earthquakeInsurance: amount(d.earthquakeInsurance),
+    medicalPaid: amount(d.medicalPaid),
+    medicalReimbursed: amount(d.medicalReimbursed),
+    donations: amount(d.donations),
+    spouse: amount(d.spouse),
+    dependents: amount(d.dependents),
+    others: amount(d.others),
+    blueDeduction:
+      d.blueDeduction === 550000 || d.blueDeduction === 100000 ? d.blueDeduction : 650000,
+    withholding: amount(d.withholding),
   };
 }
 

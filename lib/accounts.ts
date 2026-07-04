@@ -77,6 +77,8 @@ export const SETTLEMENT_ACCOUNTS: Account[] = [
   { id: 'ap_payment', label: '買掛金・未払金の支払い(振替)', type: 'expense' },
   // 10万円以上の備品等の購入。経費ではなく資産計上し、固定資産台帳の償却で経費化する
   { id: 'asset_purchase', label: '固定資産の取得(振替)', type: 'expense' },
+  // ATMでの引き出し・預け入れなど、資金の間の移動(損益に影響しない)
+  { id: 'fund_transfer', label: '資金移動(預金⇔現金)', type: 'expense' },
 ];
 
 const settlementById = new Map(SETTLEMENT_ACCOUNTS.map((a) => [a.id, a]));
@@ -86,7 +88,10 @@ export function isSettlement(account: string | null): boolean {
 }
 
 export function settlementsOf(type: TxType): Account[] {
-  return SETTLEMENT_ACCOUNTS.filter((a) => a.type === type);
+  const list = SETTLEMENT_ACCOUNTS.filter((a) => a.type === type);
+  // 資金移動は入金側(現金→預金の預け入れ等)でも使うため収入にも出す
+  if (type === 'income') list.push(settlementById.get('fund_transfer')!);
+  return list;
 }
 
 /**

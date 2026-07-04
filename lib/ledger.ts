@@ -4,6 +4,7 @@ import {
   bookValueAtEnd,
   bookValueAtStart,
   depreciationForYear,
+  isDeferred,
 } from './assets';
 import { escapeFormulaCell } from './csv';
 import { FixedAsset, InventoryCount, OpeningBalance, Transaction } from './types';
@@ -32,6 +33,7 @@ export type LedgerAccountId =
   | 'receivable'
   | 'inventory'
   | 'fixed_asset'
+  | 'deferred_asset'
   | 'card'
   | 'payable'
   | 'owner_draw'
@@ -43,16 +45,25 @@ export const LEDGER_LABELS: Record<LedgerAccountId, string> = {
   receivable: '売掛金',
   inventory: '棚卸資産(商品)',
   fixed_asset: '減価償却資産(工具器具備品等)',
+  deferred_asset: '繰延資産(開業費等)',
   card: '未払金(クレジットカード)',
   payable: '買掛金・未払金',
   owner_draw: '事業主貸',
   owner_invest: '事業主借',
 };
 
-/** 期首残高(OpeningBalance)から引き継ぐ資産勘定。棚卸・固定資産は台帳から自動算出 */
+/** 期首残高(OpeningBalance)から引き継ぐ資産勘定。棚卸・固定資産・繰延資産は台帳から自動算出 */
 const ASSET_IDS: LedgerAccountId[] = ['cash', 'bank', 'receivable'];
 const LIABILITY_IDS: LedgerAccountId[] = ['card', 'payable'];
-const DEBIT_POSITIVE_IDS: string[] = ['cash', 'bank', 'receivable', 'inventory', 'fixed_asset', 'owner_draw'];
+const DEBIT_POSITIVE_IDS: string[] = [
+  'cash',
+  'bank',
+  'receivable',
+  'inventory',
+  'fixed_asset',
+  'deferred_asset',
+  'owner_draw',
+];
 
 /** 仕訳の勘定ラベル(B/S勘定 + 損益科目の両方を解決する) */
 export function ledgerLineLabel(account: string): string {
@@ -128,6 +139,25 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
       credits: [{ account: fundCr, amount: t.amount }],
     };
   }
+  if (t.account === 'fund_transfer') {
+    // 資金の間の移動(ATM引き出し・預け入れなど)。損益に影響しない
+    const counter = t.counterFund ?? (t.fund === 'cash' ? 'bank' : 'cash');
+    const counterDr: string = counter === 'owner' ? 'owner_draw' : counter;
+    const counterCr: string = counter === 'owner' ? 'owner_invest' : counter;
+    return t.type === 'expense'
+      ? // 支出 = fund から counterFund へ(例: 預金からATMで現金を引き出す)
+        {
+          ...base,
+          debits: [{ account: counterDr, amount: t.amount }],
+          credits: [{ account: fundCr, amount: t.amount }],
+        }
+      : // 収入 = counterFund から fund へ(例: 現金を口座へ預け入れる)
+        {
+          ...base,
+          debits: [{ account: fundDr, amount: t.amount }],
+          credits: [{ account: counterCr, amount: t.amount }],
+        };
+  }
 
   if (t.type === 'income') {
     return {
@@ -168,12 +198,29 @@ export function depreciationEntries(assets: FixedAsset[], year: number): Journal
     entries.push({
       txId: `dep-${a.id}-${year}`,
       date: `${year}-12-31`,
-      description: `減価償却費 ${a.name}`,
+      description: `${isDeferred(a) ? '繰延資産償却' : '減価償却費'} ${a.name}`,
       debits,
-      credits: [{ account: 'fixed_asset', amount: d.total }],
+      credits: [{ account: isDeferred(a) ? 'deferred_asset' : 'fixed_asset', amount: d.total }],
     });
   }
   return entries;
+}
+
+/**
+ * 繰延資産(開業費)の計上仕訳。開業費は通常、開業前に個人資金で支出するため、
+ * 台帳に登録された年に (借)繰延資産 / (貸)事業主借 を自動起票する
+ * (「固定資産の取得」取引は不要。貸借は常に一致する)。
+ */
+export function deferredAcquisitionEntries(assets: FixedAsset[], year: number): JournalEntry[] {
+  return assets
+    .filter((a) => isDeferred(a) && a.acquiredDate.startsWith(`${year}-`) && a.cost > 0)
+    .map((a) => ({
+      txId: `deferred-acq-${a.id}`,
+      date: a.acquiredDate,
+      description: `開業費等の計上 ${a.name}`,
+      debits: [{ account: 'deferred_asset', amount: a.cost }],
+      credits: [{ account: 'owner_invest', amount: a.cost }],
+    }));
 }
 
 /** 指定年末の棚卸高(未登録は0) */
@@ -220,6 +267,7 @@ export function journalForYear(
 ): JournalEntry[] {
   return [
     ...deriveJournal(transactionsOfYear(transactions, year)),
+    ...deferredAcquisitionEntries(assets, year),
     ...depreciationEntries(assets, year),
     ...inventoryEntries(inventories, year),
   ];
@@ -291,12 +339,15 @@ export function buildBalanceSheet(
   for (const [id, v] of cr) if (accountType(id) === 'expense') costs -= v;
   const profit = revenue - costs;
 
+  const tangible = fixedAssets.filter((a) => !isDeferred(a));
+  const deferred = fixedAssets.filter((a) => isDeferred(a));
   const openOf: Record<LedgerAccountId, number> = {
     cash: ob.cash,
     bank: ob.bank,
     receivable: ob.receivable,
     inventory: inventoryAmount(inventories, year - 1),
-    fixed_asset: fixedAssets.reduce((s, a) => s + bookValueAtStart(a, year), 0),
+    fixed_asset: tangible.reduce((s, a) => s + bookValueAtStart(a, year), 0),
+    deferred_asset: deferred.reduce((s, a) => s + bookValueAtStart(a, year), 0),
     card: ob.card,
     payable: ob.payable,
     owner_draw: 0,
@@ -322,8 +373,17 @@ export function buildBalanceSheet(
     id: 'fixed_asset',
     label: LEDGER_LABELS.fixed_asset,
     opening: openOf.fixed_asset,
-    closing: fixedAssets.reduce((s, a) => s + bookValueAtEnd(a, year), 0),
+    closing: tangible.reduce((s, a) => s + bookValueAtEnd(a, year), 0),
   });
+  // 繰延資産(開業費): 計上仕訳(開業費/事業主借)を自動起票するため常に貸借一致する
+  if (openOf.deferred_asset > 0 || deferred.length > 0) {
+    assets.push({
+      id: 'deferred_asset',
+      label: LEDGER_LABELS.deferred_asset,
+      opening: openOf.deferred_asset,
+      closing: deferred.reduce((s, a) => s + bookValueAtEnd(a, year), 0),
+    });
+  }
   const ownerDraw = d('owner_draw') - c('owner_draw');
   assets.push({ id: 'owner_draw', label: LEDGER_LABELS.owner_draw, opening: 0, closing: ownerDraw });
 
@@ -335,7 +395,14 @@ export function buildBalanceSheet(
   }));
 
   const capital =
-    ob.cash + ob.bank + ob.receivable + openOf.inventory + openOf.fixed_asset - ob.card - ob.payable;
+    ob.cash +
+    ob.bank +
+    ob.receivable +
+    openOf.inventory +
+    openOf.fixed_asset +
+    openOf.deferred_asset -
+    ob.card -
+    ob.payable;
   const ownerInvest = c('owner_invest') - d('owner_invest');
   const equity: BalanceSheetRow[] = [
     { id: 'owner_invest', label: LEDGER_LABELS.owner_invest, opening: 0, closing: ownerInvest },

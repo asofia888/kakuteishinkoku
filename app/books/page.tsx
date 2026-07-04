@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
 import { availableYears, transactionsOfYear } from '@/lib/aggregate';
-import { bookValueAtStart } from '@/lib/assets';
+import { bookValueAtStart, isDeferred } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
 import { dateLabel, yen } from '@/lib/format';
 import {
@@ -62,7 +62,12 @@ export default function BooksPage() {
       card: opening?.card ?? 0,
       payable: opening?.payable ?? 0,
       inventory: inventoryAmount(store.inventories, year - 1),
-      fixed_asset: store.assets.reduce((s, a) => s + bookValueAtStart(a, year), 0),
+      fixed_asset: store.assets
+        .filter((a) => !isDeferred(a))
+        .reduce((s, a) => s + bookValueAtStart(a, year), 0),
+      deferred_asset: store.assets
+        .filter((a) => isDeferred(a))
+        .reduce((s, a) => s + bookValueAtStart(a, year), 0),
     }),
     [opening, store.inventories, store.assets, year],
   );

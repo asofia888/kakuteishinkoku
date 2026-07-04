@@ -139,6 +139,48 @@ export function summarizeYear(
   };
 }
 
+export interface MonthlyRow {
+  /** 1〜12 */
+  month: number;
+  sales: number;
+  /** 経費(按分後の事業分)。12月には減価償却費・棚卸調整も含まれる */
+  expense: number;
+  profit: number;
+}
+
+/**
+ * 月次推移(売上・経費・損益)。
+ * 減価償却費と棚卸調整は12月の決算整理として12月分に計上する。
+ */
+export function monthlyBreakdown(
+  transactions: Transaction[],
+  year: number,
+  assets: FixedAsset[] = [],
+  inventories: InventoryCount[] = [],
+): MonthlyRow[] {
+  const sales = Array.from({ length: 12 }, () => 0);
+  const expense = Array.from({ length: 12 }, () => 0);
+  for (const t of transactionsOfYear(transactions, year)) {
+    if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) continue;
+    const m = Number(t.date.slice(5, 7)) - 1;
+    if (m < 0 || m > 11) continue;
+    if (t.type === 'income') sales[m] += t.amount;
+    else expense[m] += t.businessAmount;
+  }
+  // 決算整理(償却費・棚卸調整)は12月へ
+  expense[11] += yearDepreciationTotals(assets, year).business;
+  const invOpen = inventories.find((i) => i.year === year - 1)?.amount ?? 0;
+  const invClose = inventories.find((i) => i.year === year)?.amount ?? 0;
+  expense[11] += invOpen - invClose;
+
+  return sales.map((s, i) => ({
+    month: i + 1,
+    sales: s,
+    expense: expense[i],
+    profit: s - expense[i],
+  }));
+}
+
 /** これ以上の取得価額は原則、減価償却が必要になる金額(10万円) */
 export const DEPRECIATION_MIN = 100_000;
 

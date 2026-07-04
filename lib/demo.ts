@@ -109,6 +109,31 @@ export function buildDemoData(): AppData {
     fund: 'receivable',
   });
 
+  // 資金移動と現金払い(ATMで事業用現金を用意し、現金で少額経費を払う例)
+  txs.push(
+    {
+      date: `${year}-04-05`,
+      amount: 30000,
+      description: 'ATM引き出し(事業用現金)',
+      type: 'expense',
+      account: 'fund_transfer', // 預金 → 現金 の資金移動(損益に影響しない)
+      approved: true,
+      source: 'demo',
+      fund: 'bank',
+      counterFund: 'cash',
+    },
+    {
+      date: `${year}-04-18`,
+      amount: 3200,
+      description: '文具店 コピー用紙・封筒(現金)',
+      type: 'expense',
+      account: 'supplies',
+      approved: true,
+      source: 'demo',
+      fund: 'cash',
+    },
+  );
+
   // 固定資産の取得(経費ではなく資産計上 → 台帳の減価償却で経費化される)
   txs.push({
     date: `${year}-03-10`,
@@ -248,5 +273,6 @@ export function buildDemoData(): AppData {
       },
     ],
     inventories: [],
+    deductions: [],
   };
 }

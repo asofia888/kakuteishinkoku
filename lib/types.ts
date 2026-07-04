@@ -40,6 +40,12 @@ export interface Transaction {
   createdAt: number;
   /** 決済手段。複式仕訳で現金・普通預金・カード未払金などの相手勘定になる */
   fund: FundId;
+  /**
+   * 科目が「資金移動(fund_transfer)」のときの相手側の資金。
+   * 支出なら移動先(fund → counterFund)、収入なら移動元(counterFund → fund)。
+   * 未設定は 預金⇔現金 を自動補完する。
+   */
+  counterFund?: FundId;
   /** 消費税の税区分。未設定は科目からの自動判定(defaultTaxCategory)を使う */
   taxCategory?: TaxCategory;
   /** 適格請求書(インボイス)の有無。未設定 = あり。課税仕入の税額控除の判定に使う */
@@ -169,8 +175,9 @@ export const DEFAULT_ISSUER: IssuerProfile = {
  * - straight: 定額法(個人の法定償却方法。平成19年4月以後取得の資産)
  * - lump3: 一括償却資産(取得価額10万〜20万円未満。3年均等・月割りなし)
  * - immediate: 少額減価償却資産の特例(青色申告・30万円未満・年合計300万円まで。全額その年の経費)
+ * - deferred: 繰延資産(開業費・開発費など)。任意償却で、年ごとの償却額を自由に決められる
  */
-export type DepreciationMethod = 'straight' | 'lump3' | 'immediate';
+export type DepreciationMethod = 'straight' | 'lump3' | 'immediate' | 'deferred';
 
 /** 固定資産(減価償却資産)台帳の1件 */
 export interface FixedAsset {
@@ -193,6 +200,11 @@ export interface FixedAsset {
    * 除却損・売却損益は自動計上しない(個人の事業用資産の売却は譲渡所得になるため)。
    */
   disposedDate?: string;
+  /**
+   * 繰延資産(method='deferred')の年ごとの任意償却額。
+   * 開業費は好きな年に好きな額を償却できる(全額の年もあれば0の年もある)。
+   */
+  deferredDep?: { year: number; amount: number }[];
   createdAt: number;
 }
 
@@ -200,6 +212,53 @@ export interface FixedAsset {
 export interface InventoryCount {
   year: number;
   amount: number;
+}
+
+/** 所得税シミュレーション用の所得控除入力(年ごとに1件) */
+export interface DeductionEntry {
+  year: number;
+  /** 社会保険料控除(国民年金・国保など。全額) */
+  socialInsurance: number;
+  /** 小規模企業共済等掛金控除(iDeCo・共済。全額) */
+  mutualAid: number;
+  /** 生命保険料控除(計算後の控除額。上限12万円) */
+  lifeInsurance: number;
+  /** 地震保険料控除(上限5万円) */
+  earthquakeInsurance: number;
+  /** 支払った医療費(足切りは自動計算) */
+  medicalPaid: number;
+  /** 医療費のうち保険金などで補填された額 */
+  medicalReimbursed: number;
+  /** 寄附金(ふるさと納税含む)の支払額 */
+  donations: number;
+  /** 配偶者(特別)控除額 */
+  spouse: number;
+  /** 扶養控除額 */
+  dependents: number;
+  /** その他の控除(寡婦・ひとり親・障害者など) */
+  others: number;
+  /** 青色申告特別控除(65万/55万/10万) */
+  blueDeduction: 650000 | 550000 | 100000;
+  /** 源泉徴収税額(請求書の源泉から自動集計できる) */
+  withholding: number;
+}
+
+export function emptyDeduction(year: number): DeductionEntry {
+  return {
+    year,
+    socialInsurance: 0,
+    mutualAid: 0,
+    lifeInsurance: 0,
+    earthquakeInsurance: 0,
+    medicalPaid: 0,
+    medicalReimbursed: 0,
+    donations: 0,
+    spouse: 0,
+    dependents: 0,
+    others: 0,
+    blueDeduction: 650000,
+    withholding: 0,
+  };
 }
 
 /** アプリ全体の永続化データ */
@@ -219,6 +278,8 @@ export interface AppData {
   assets: FixedAsset[];
   /** 年末棚卸高(年ごとに1件) */
   inventories: InventoryCount[];
+  /** 所得控除の入力(年ごとに1件) */
+  deductions: DeductionEntry[];
 }
 
 export function uid(): string {

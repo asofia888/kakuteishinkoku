@@ -53,6 +53,7 @@ const goodData: AppData = {
     },
   ],
   inventories: [{ year: 2026, amount: 120000 }],
+  deductions: [],
 };
 
 describe('バックアップの往復(エクスポート → インポート)', () => {

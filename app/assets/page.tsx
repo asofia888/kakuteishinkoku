@@ -9,6 +9,7 @@ import {
   depreciationForYear,
   depreciationSchedule,
   depreciationTableCsv,
+  isDeferred,
   METHOD_LABELS,
   straightLineRate,
   USEFUL_LIFE_PRESETS,
@@ -56,8 +57,12 @@ export default function AssetsPage() {
         .reduce((s, t) => s + t.amount, 0),
     [store.transactions, year],
   );
+  // 開業費(繰延資産)は計上仕訳が自動起票されるため、取得取引との照合対象から外す
   const registerCostTotal = useMemo(
-    () => acquisitionsInYear(store.assets, year).reduce((s, a) => s + a.cost, 0),
+    () =>
+      acquisitionsInYear(store.assets, year)
+        .filter((a) => !isDeferred(a))
+        .reduce((s, a) => s + a.cost, 0),
     [store.assets, year],
   );
 
@@ -126,19 +131,31 @@ export default function AssetsPage() {
                 acquiredDate: draft.acquiredDate,
                 cost: Math.round(draft.cost),
                 method: draft.method,
-                usefulLife: Math.min(100, Math.max(2, Math.round(draft.usefulLife))),
+                usefulLife: Math.min(100, Math.max(2, Math.round(draft.usefulLife || 4))),
                 businessRatio: Math.min(100, Math.max(1, Math.round(draft.businessRatio))),
                 ...(draft.memo?.trim() ? { memo: draft.memo.trim() } : {}),
-                ...(draft.disposedDate ? { disposedDate: draft.disposedDate } : {}),
+                ...(draft.method !== 'deferred' && draft.disposedDate
+                  ? { disposedDate: draft.disposedDate }
+                  : {}),
+                ...(draft.method === 'deferred' && draft.deferredDep?.length
+                  ? { deferredDep: draft.deferredDep }
+                  : {}),
               };
               if (!clean.name || !clean.acquiredDate || clean.cost <= 0) return;
               if (draft.id) {
-                store.updateAsset(draft.id, { ...clean, memo: clean.memo ?? '', disposedDate: clean.disposedDate ?? '' });
+                store.updateAsset(draft.id, {
+                  ...clean,
+                  memo: clean.memo ?? '',
+                  disposedDate: clean.disposedDate ?? '',
+                  deferredDep: clean.deferredDep ?? [],
+                });
                 setMessage(`「${clean.name}」を更新しました。償却費は自動で再計算されています。`);
               } else {
                 store.addAsset(clean);
                 setMessage(
-                  `「${clean.name}」を登録しました。購入の支払い行は科目を「固定資産の取得(振替)」にしてください(経費との二重計上を防ぎます)。`,
+                  clean.method === 'deferred'
+                    ? `「${clean.name}」を登録しました。開業日付で「(借)繰延資産 / (貸)事業主借」が自動起票されます。償却額は編集画面でいつでも設定できます。`
+                    : `「${clean.name}」を登録しました。購入の支払い行は科目を「固定資産の取得(振替)」にしてください(経費との二重計上を防ぎます)。`,
                 );
               }
               setDraft(null);
@@ -240,6 +257,7 @@ export default function AssetsPage() {
                                   businessRatio: a.businessRatio,
                                   memo: a.memo ?? '',
                                   disposedDate: a.disposedDate ?? '',
+                                  deferredDep: a.deferredDep ?? [],
                                 })
                               }
                             >
@@ -349,12 +367,14 @@ function AssetForm({
             <option value="straight">定額法(原則)</option>
             <option value="lump3">一括償却(3年均等・10〜20万円未満)</option>
             <option value="immediate">少額特例(全額その年の経費・30万円未満)</option>
+            <option value="deferred">開業費・繰延資産(任意償却)</option>
           </select>
         </div>
         {draft.method === 'straight' && (
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">
-              耐用年数(償却率 {straightLineRate(Math.min(100, Math.max(2, draft.usefulLife))).toFixed(3)})
+              耐用年数(償却率{' '}
+              {straightLineRate(Math.min(100, Math.max(2, draft.usefulLife || 2))).toFixed(3)})
             </label>
             <div className="flex gap-2">
               <input
@@ -402,7 +422,7 @@ function AssetForm({
             onChange={(e) => set({ memo: e.target.value })}
           />
         </div>
-        {draft.id && (
+        {draft.id && draft.method !== 'deferred' && (
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-500">除却・売却日(任意)</label>
             <input
@@ -411,6 +431,23 @@ function AssetForm({
               value={draft.disposedDate ?? ''}
               onChange={(e) => set({ disposedDate: e.target.value })}
             />
+          </div>
+        )}
+        {draft.method === 'deferred' && (
+          <div className="sm:col-span-2 lg:col-span-3">
+            <label className="mb-1 block text-xs font-medium text-slate-500">
+              任意償却の履歴(年ごとの償却額。合計は取得価額まで)
+            </label>
+            <DeferredDepEditor
+              deferredDep={draft.deferredDep ?? []}
+              cost={draft.cost}
+              acquiredYear={Number(draft.acquiredDate.slice(0, 4)) || new Date().getFullYear()}
+              onChange={(deferredDep) => set({ deferredDep })}
+            />
+            <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+              開業費は登録すると開業日付で「(借)繰延資産 /
+              (貸)事業主借」が自動起票されます(取得取引の登録は不要)。償却額は好きな年に自由に決められます(利益が出た年に多く償却するのが定石)。
+            </p>
           </div>
         )}
       </div>
@@ -431,6 +468,91 @@ function AssetForm({
         </button>
       </div>
     </Card>
+  );
+}
+
+/** 繰延資産(開業費)の任意償却額エディタ */
+function DeferredDepEditor({
+  deferredDep,
+  cost,
+  acquiredYear,
+  onChange,
+}: {
+  deferredDep: { year: number; amount: number }[];
+  cost: number;
+  acquiredYear: number;
+  onChange: (rows: { year: number; amount: number }[]) => void;
+}) {
+  const currentYear = new Date().getFullYear();
+  const [year, setYear] = useState(currentYear);
+  const [amount, setAmount] = useState('');
+  const used = deferredDep.reduce((s, d) => s + d.amount, 0);
+  const remaining = Math.max(0, Math.round(cost) - used);
+  const yearOptions: number[] = [];
+  for (let y = acquiredYear; y <= Math.max(currentYear + 1, acquiredYear); y++) yearOptions.push(y);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      {deferredDep.length > 0 && (
+        <table className="mb-2 w-full max-w-md text-sm">
+          <tbody>
+            {[...deferredDep]
+              .sort((a, b) => a.year - b.year)
+              .map((d) => (
+                <tr key={d.year} className="border-b border-slate-200/60">
+                  <td className="py-1 pr-2">{d.year}年</td>
+                  <td className="tabular px-2 py-1 text-right">{yen(d.amount)}</td>
+                  <td className="py-1 pl-2 text-right">
+                    <button
+                      type="button"
+                      className={btn.danger}
+                      onClick={() => onChange(deferredDep.filter((x) => x.year !== d.year))}
+                    >
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <select className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          {yearOptions.map((y) => (
+            <option key={y} value={y}>
+              {y}年
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          min={1}
+          max={remaining || undefined}
+          className={`${input} w-36 text-right`}
+          placeholder={`残り ${yen(remaining)}`}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+        <button
+          type="button"
+          className={btn.small}
+          disabled={remaining <= 0}
+          onClick={() => {
+            const n = Math.round(Number(amount));
+            if (!Number.isFinite(n) || n <= 0) return;
+            const others = deferredDep.filter((x) => x.year !== year);
+            const usedOthers = others.reduce((s, d) => s + d.amount, 0);
+            const capped = Math.min(n, Math.max(0, Math.round(cost) - usedOthers));
+            if (capped <= 0) return;
+            onChange([...others, { year, amount: capped }].sort((a, b) => a.year - b.year));
+            setAmount('');
+          }}
+        >
+          ＋ この年の償却額を設定
+        </button>
+        <span className="text-xs text-slate-400">未償却残高: {yen(remaining)}</span>
+      </div>
+    </div>
   );
 }
 

@@ -130,3 +130,41 @@ describe('yearDepreciationTotals: 複数資産の合計', () => {
     expect(t.business).toBe(140000);
   });
 });
+
+describe('繰延資産(開業費)の任意償却', () => {
+  const kaigyo = asset({
+    method: 'deferred',
+    cost: 300000,
+    acquiredDate: '2025-04-01',
+    deferredDep: [
+      { year: 2026, amount: 200000 },
+      { year: 2025, amount: 50000 },
+    ],
+  });
+
+  it('指定した年・金額で償却し、残額を限度にする', () => {
+    const rows = depreciationSchedule(kaigyo);
+    expect(rows).toEqual([
+      { year: 2025, months: 12, opening: 300000, dep: 50000, closing: 250000 },
+      { year: 2026, months: 12, opening: 250000, dep: 200000, closing: 50000 },
+    ]);
+    expect(depreciationForYear(kaigyo, 2026).total).toBe(200000);
+    expect(depreciationForYear(kaigyo, 2027).total).toBe(0); // 未設定の年は償却しない
+    expect(bookValueAtEnd(kaigyo, 2026)).toBe(50000);
+  });
+
+  it('残額を超える指定は残額まで切り詰める', () => {
+    const over = asset({
+      method: 'deferred',
+      cost: 100000,
+      acquiredDate: '2025-04-01',
+      deferredDep: [
+        { year: 2025, amount: 80000 },
+        { year: 2026, amount: 50000 }, // 残り20,000しかない
+      ],
+    });
+    const rows = depreciationSchedule(over);
+    expect(rows[1].dep).toBe(20000);
+    expect(rows[1].closing).toBe(0);
+  });
+});

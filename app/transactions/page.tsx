@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
 import {
   accountLabel,
@@ -22,6 +22,14 @@ import {
   readFileText,
   resolveTypeAndAmount,
 } from '@/lib/csv';
+import {
+  addFiles,
+  countsByTx,
+  deleteFile,
+  formatBytes,
+  listFiles,
+  StoredFile,
+} from '@/lib/files';
 import { dateLabel, today, yen } from '@/lib/format';
 import { suggestAccount } from '@/lib/rules';
 import { useStore } from '@/lib/store';
@@ -67,6 +75,14 @@ export default function TransactionsPage() {
   const [listMessage, setListMessage] = useState<string | null>(null);
   /** 直前に削除した取引(「元に戻す」用) */
   const [lastDeleted, setLastDeleted] = useState<Transaction[] | null>(null);
+
+  // ── 証憑(添付ファイル)──
+  const [fileCounts, setFileCounts] = useState<Map<string, number>>(new Map());
+  const [attachTx, setAttachTx] = useState<Transaction | null>(null);
+  useEffect(() => {
+    void countsByTx().then(setFileCounts);
+  }, []);
+  const refreshFileCounts = () => void countsByTx().then(setFileCounts);
 
   // ── フィルタ ──
   const [yearFilter, setYearFilter] = useState<string>('all');
@@ -576,6 +592,8 @@ export default function TransactionsPage() {
                     <TxRow
                       key={t.id}
                       t={t}
+                      fileCount={fileCounts.get(t.id) ?? 0}
+                      onAttach={setAttachTx}
                       onDeleted={(tx) => {
                         setLastDeleted([tx]);
                         setListMessage(null);
@@ -599,6 +617,16 @@ export default function TransactionsPage() {
           )}
         </Card>
       </div>
+
+      {attachTx && (
+        <AttachmentsModal
+          t={attachTx}
+          onClose={() => {
+            setAttachTx(null);
+            refreshFileCounts();
+          }}
+        />
+      )}
     </>
   );
 }
@@ -663,6 +691,31 @@ function FundSelect({ t }: { t: Transaction }) {
   );
 }
 
+/** 資金移動の相手側(移動先/移動元)セレクト */
+function CounterFundControl({ t }: { t: Transaction }) {
+  const store = useStore();
+  if (t.account !== 'fund_transfer') return null;
+  const counter = t.counterFund ?? (t.fund === 'cash' ? 'bank' : 'cash');
+  const options = (['bank', 'cash'] as FundId[]).filter((f) => f !== t.fund);
+  if (!options.includes(counter)) options.unshift(counter);
+  return (
+    <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+      <span>{t.type === 'expense' ? '移動先:' : '移動元:'}</span>
+      <select
+        className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600"
+        value={counter}
+        onChange={(e) => store.updateTransaction(t.id, { counterFund: e.target.value as FundId })}
+      >
+        {options.map((f) => (
+          <option key={f} value={f}>
+            {fundLabel(f)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 /** 消費税の税区分と適格請求書チェック(課税事業者の設定時のみ表示) */
 function TaxControls({ t }: { t: Transaction }) {
   const store = useStore();
@@ -720,7 +773,17 @@ function DepreciationHint({ account, amount, type }: { account: string | null; a
   );
 }
 
-function TxRow({ t, onDeleted }: { t: Transaction; onDeleted: (t: Transaction) => void }) {
+function TxRow({
+  t,
+  fileCount,
+  onAttach,
+  onDeleted,
+}: {
+  t: Transaction;
+  fileCount: number;
+  onAttach: (t: Transaction) => void;
+  onDeleted: (t: Transaction) => void;
+}) {
   const store = useStore();
   const anbunNote = t.type === 'expense' && t.anbunApplied && t.businessAmount !== t.amount;
 
@@ -764,6 +827,7 @@ function TxRow({ t, onDeleted }: { t: Transaction; onDeleted: (t: Transaction) =
           onChange={(v) => store.updateTransaction(t.id, { account: v, approved: false })}
         />
         <DepreciationHint account={t.account} amount={t.amount} type={t.type} />
+        <CounterFundControl t={t} />
         <TaxControls t={t} />
       </td>
       <td className="tabular px-2 py-2 text-right whitespace-nowrap">
@@ -811,22 +875,143 @@ function TxRow({ t, onDeleted }: { t: Transaction; onDeleted: (t: Transaction) =
           </button>
         )}
       </td>
-      <td className="px-2 py-2 text-right">
-        <button
-          type="button"
-          className={btn.danger}
-          onClick={() => {
-            if (confirm(`「${t.description}」(${yen(t.amount)})を削除しますか?`)) {
-              store.deleteTransaction(t.id);
-              // 削除直後に「元に戻す」を出す(誤削除からの復旧用)
-              onDeleted(t);
-            }
-          }}
-        >
-          削除
-        </button>
+      <td className="px-2 py-2 text-right whitespace-nowrap">
+        <div className="flex justify-end gap-1">
+          <button
+            type="button"
+            className={`${btn.small} ${fileCount > 0 ? 'border-blue-300 text-blue-700' : ''}`}
+            title="証憑(領収書・請求書PDF)を添付・表示"
+            onClick={() => onAttach(t)}
+          >
+            📎{fileCount > 0 ? fileCount : ''}
+          </button>
+          <button
+            type="button"
+            className={btn.danger}
+            onClick={() => {
+              if (confirm(`「${t.description}」(${yen(t.amount)})を削除しますか?`)) {
+                store.deleteTransaction(t.id);
+                // 削除直後に「元に戻す」を出す(誤削除からの復旧用)
+                onDeleted(t);
+              }
+            }}
+          >
+            削除
+          </button>
+        </div>
       </td>
     </tr>
+  );
+}
+
+/** 証憑(領収書・請求書PDF)の添付モーダル */
+function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void }) {
+  const [files, setFiles] = useState<StoredFile[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void listFiles(t.id).then(setFiles);
+  }, [t.id]);
+
+  const reload = () => void listFiles(t.id).then(setFiles);
+
+  const openFile = (f: StoredFile) => {
+    const url = URL.createObjectURL(f.blob);
+    window.open(url, '_blank');
+    // 表示に使い終わったObjectURLは解放する
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-auto bg-slate-900/60 p-4 md:p-10" onClick={onClose}>
+      <div
+        className="mx-auto max-w-xl rounded-xl bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-800">証憑の添付</h2>
+            <p className="mt-0.5 max-w-sm truncate text-xs text-slate-500" title={t.description}>
+              {dateLabel(t.date)}・{yen(t.amount)}・{t.description}
+            </p>
+          </div>
+          <button type="button" className={btn.secondary} onClick={onClose}>
+            閉じる
+          </button>
+        </div>
+
+        {files === null ? (
+          <p className="py-6 text-center text-sm text-slate-400">読み込み中…</p>
+        ) : files.length === 0 ? (
+          <p className="py-6 text-center text-sm text-slate-400">
+            まだ証憑がありません。領収書の写真や請求書PDFを追加してください。
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <tbody>
+              {files.map((f) => (
+                <tr key={f.id} className="border-b border-slate-100">
+                  <td className="max-w-[260px] truncate py-1.5 pr-2">
+                    <button
+                      type="button"
+                      className="text-blue-700 underline hover:text-blue-800"
+                      title="別タブで表示"
+                      onClick={() => openFile(f)}
+                    >
+                      {f.name}
+                    </button>
+                  </td>
+                  <td className="tabular px-2 py-1.5 text-right text-xs text-slate-400 whitespace-nowrap">
+                    {formatBytes(f.size)}
+                  </td>
+                  <td className="py-1.5 pl-2 text-right">
+                    <button
+                      type="button"
+                      className={btn.danger}
+                      onClick={() => {
+                        if (confirm(`「${f.name}」を削除しますか?`)) {
+                          void deleteFile(f.id).then(reload);
+                        }
+                      }}
+                    >
+                      削除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <div className="mt-4">
+          <label className="mb-1 block text-xs font-medium text-slate-500">
+            ファイルを追加(画像・PDF、1ファイル10MBまで)
+          </label>
+          <input
+            type="file"
+            multiple
+            accept="image/*,.pdf"
+            disabled={busy}
+            className="block text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+            onChange={async (e) => {
+              const list = Array.from(e.target.files ?? []);
+              if (list.length === 0) return;
+              setBusy(true);
+              await addFiles(t.id, list);
+              setBusy(false);
+              e.target.value = '';
+              reload();
+            }}
+          />
+        </div>
+
+        <p className="mt-4 text-[11px] leading-relaxed text-slate-400">
+          証憑はこの端末のブラウザ(IndexedDB)にのみ保存され、<strong>バックアップJSONには含まれません</strong>。
+          電子帳簿保存法の検索(日付・金額・取引先)は取引一覧の検索・絞り込みで行えます。
+          電子取引の原本データは、訂正削除防止の事務処理規程を整えた上で元ファイルも別途保管しておくと安全です。
+        </p>
+      </div>
+    </div>
   );
 }
 

@@ -284,3 +284,87 @@ describe('固定資産・棚卸の帳簿統合', () => {
     expect(bs.balanced).toBe(false);
   });
 });
+
+describe('資金移動(fund_transfer)', () => {
+  it('預金からの引き出し: (借)現金 / (貸)普通預金(損益に影響しない)', () => {
+    const e = entryForTransaction(
+      tx({ description: 'ATM引き出し', type: 'expense', account: 'fund_transfer', fund: 'bank', counterFund: 'cash', amount: 30000 }),
+    )!;
+    expect(e.debits).toEqual([{ account: 'cash', amount: 30000 }]);
+    expect(e.credits).toEqual([{ account: 'bank', amount: 30000 }]);
+  });
+
+  it('現金の預け入れ(収入行): (借)普通預金 / (貸)現金', () => {
+    const e = entryForTransaction(
+      tx({ description: 'ATM預け入れ', type: 'income', account: 'fund_transfer', fund: 'bank', counterFund: 'cash', amount: 50000 }),
+    )!;
+    expect(e.debits).toEqual([{ account: 'bank', amount: 50000 }]);
+    expect(e.credits).toEqual([{ account: 'cash', amount: 50000 }]);
+  });
+
+  it('counterFund 未設定は預金⇔現金を自動補完し、B/Sの残高が正しく動く', () => {
+    const e = entryForTransaction(
+      tx({ description: '引き出し', type: 'expense', account: 'fund_transfer', fund: 'bank', amount: 10000 }),
+    )!;
+    expect(e.debits[0].account).toBe('cash');
+
+    const bs = buildBalanceSheet(
+      [tx({ date: '2026-04-05', description: 'ATM', type: 'expense', account: 'fund_transfer', fund: 'bank', counterFund: 'cash', amount: 30000 })],
+      2026,
+      { year: 2026, cash: 0, bank: 100000, receivable: 0, card: 0, payable: 0 },
+    );
+    const closing = (id: string) => bs.assets.find((r) => r.id === id)!.closing;
+    expect(closing('bank')).toBe(70000);
+    expect(closing('cash')).toBe(30000);
+    expect(bs.profit).toBe(0); // 損益に影響しない
+    expect(bs.balanced).toBe(true);
+  });
+});
+
+describe('繰延資産(開業費)の帳簿統合', () => {
+  const kaigyo: FixedAsset = {
+    id: 'k1',
+    name: '開業費',
+    acquiredDate: '2026-04-01',
+    cost: 300000,
+    method: 'deferred',
+    usefulLife: 5,
+    businessRatio: 100,
+    deferredDep: [{ year: 2026, amount: 100000 }],
+    createdAt: 1,
+  };
+
+  it('計上仕訳(開業費/事業主借)が自動起票され、償却後もB/Sが一致する', () => {
+    const bs = buildBalanceSheet(
+      [],
+      2026,
+      { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0 },
+      [kaigyo],
+      [],
+    );
+    const deferredRow = bs.assets.find((r) => r.id === 'deferred_asset')!;
+    expect(deferredRow.opening).toBe(0); // 開業年の期首は0
+    expect(deferredRow.closing).toBe(200000); // 300,000 − 100,000
+    // 事業主借に開業費の計上30万が入る
+    const invest = bs.equity.find((r) => r.id === 'owner_invest')!;
+    expect(invest.closing).toBe(300000);
+    // 償却10万は経費(減価償却費)として損益に載る
+    expect(bs.profit).toBe(-100000);
+    expect(bs.balanced).toBe(true);
+  });
+
+  it('翌年は期首残高に未償却残高が引き継がれる', () => {
+    const bs = buildBalanceSheet(
+      [],
+      2027,
+      { year: 2027, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0 },
+      [kaigyo],
+      [],
+    );
+    const deferredRow = bs.assets.find((r) => r.id === 'deferred_asset')!;
+    expect(deferredRow.opening).toBe(200000);
+    expect(deferredRow.closing).toBe(200000); // 2027年は償却指定なし
+    expect(bs.capital).toBe(200000); // 元入金に繰延資産の期首が含まれる
+    expect(bs.balanced).toBe(true);
+  });
+});

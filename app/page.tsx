@@ -1,12 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import BarChart from '@/components/BarChart';
 import { Alert, btn, Card, EmptyState, PageHeader, selectCls, StatCard } from '@/components/ui';
 import {
   availableYears,
   depreciationCandidates,
+  monthlyBreakdown,
   periodSlipCandidates,
   summarizeYear,
   summaryToCsv,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/aggregate';
 import { buildBackupJson, parseBackupJson } from '@/lib/backup';
 import { downloadText, transactionsToCsv } from '@/lib/csv';
+import { deleteOrphans, formatBytes, totalUsage } from '@/lib/files';
 import { today, yen } from '@/lib/format';
 import { useStore } from '@/lib/store';
 
@@ -21,6 +23,10 @@ export default function DashboardPage() {
   const store = useStore();
   const [year, setYear] = useState(() => new Date().getFullYear());
   const restoreRef = useRef<HTMLInputElement>(null);
+  const [fileUsage, setFileUsage] = useState<{ count: number; size: number } | null>(null);
+  useEffect(() => {
+    void totalUsage().then(setFileUsage);
+  }, []);
 
   const years = useMemo(
     () => availableYears(store.transactions, new Date().getFullYear()),
@@ -29,6 +35,10 @@ export default function DashboardPage() {
   // 固定資産台帳の減価償却費・棚卸高の売上原価調整も合算される
   const summary = useMemo(
     () => summarizeYear(store.transactions, year, store.assets, store.inventories),
+    [store.transactions, year, store.assets, store.inventories],
+  );
+  const monthly = useMemo(
+    () => monthlyBreakdown(store.transactions, year, store.assets, store.inventories),
     [store.transactions, year, store.assets, store.inventories],
   );
 
@@ -205,36 +215,66 @@ export default function DashboardPage() {
             />
           </div>
 
-          <Card title={`月別売上(${year}年)`}>
+          <Card title={`月次推移(${year}年・売上/経費/損益)`}>
             <BarChart values={summary.monthlySales} />
             <div className="mt-4 overflow-x-auto">
-              <table className="w-full min-w-[640px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
                     <th className="py-2 pr-2 font-medium">月</th>
-                    {summary.monthlySales.map((_, i) => (
-                      <th key={i} className="tabular px-2 py-2 text-right font-medium">
-                        {i + 1}月
+                    {monthly.map((m) => (
+                      <th key={m.month} className="tabular px-2 py-2 text-right font-medium">
+                        {m.month}月
                       </th>
                     ))}
                     <th className="tabular px-2 py-2 text-right font-semibold">年間合計</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
+                  <tr className="border-b border-slate-100">
                     <td className="py-2 pr-2 text-xs text-slate-500">売上</td>
-                    {summary.monthlySales.map((v, i) => (
-                      <td key={i} className="tabular px-2 py-2 text-right">
-                        {v === 0 ? '—' : v.toLocaleString()}
+                    {monthly.map((m) => (
+                      <td key={m.month} className="tabular px-2 py-2 text-right">
+                        {m.sales === 0 ? '—' : m.sales.toLocaleString()}
                       </td>
                     ))}
                     <td className="tabular px-2 py-2 text-right font-semibold text-blue-700">
                       {summary.totalSales.toLocaleString()}
                     </td>
                   </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-2 pr-2 text-xs text-slate-500">経費(按分後)</td>
+                    {monthly.map((m) => (
+                      <td key={m.month} className="tabular px-2 py-2 text-right text-slate-500">
+                        {m.expense === 0 ? '—' : m.expense.toLocaleString()}
+                      </td>
+                    ))}
+                    <td className="tabular px-2 py-2 text-right font-semibold text-slate-600">
+                      {summary.totalExpense.toLocaleString()}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2 pr-2 text-xs text-slate-500">損益</td>
+                    {monthly.map((m) => (
+                      <td
+                        key={m.month}
+                        className={`tabular px-2 py-2 text-right font-medium ${m.profit < 0 ? 'text-rose-600' : ''}`}
+                      >
+                        {m.sales === 0 && m.expense === 0 ? '—' : m.profit.toLocaleString()}
+                      </td>
+                    ))}
+                    <td
+                      className={`tabular px-2 py-2 text-right font-bold ${summary.profit < 0 ? 'text-rose-600' : 'text-emerald-700'}`}
+                    >
+                      {summary.profit.toLocaleString()}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
+            <p className="mt-2 text-xs text-slate-400">
+              ※減価償却費・棚卸調整などの決算整理は12月分の経費に含めています。
+            </p>
           </Card>
 
           <Card
@@ -399,10 +439,30 @@ export default function DashboardPage() {
                 全データを削除
               </button>
             </div>
+            {fileUsage && fileUsage.count > 0 && (
+              <p className="mt-3 text-xs text-slate-500">
+                📎 証憑ファイル: {fileUsage.count}件({formatBytes(fileUsage.size)})
+                <button
+                  type="button"
+                  className="ml-2 font-medium text-blue-700 underline"
+                  title="削除済みの取引に紐づいたままの証憑を削除します"
+                  onClick={() => {
+                    const ids = new Set(store.transactions.map((t) => t.id));
+                    void deleteOrphans(ids).then((n) => {
+                      alert(n > 0 ? `取引に紐づかない証憑を${n}件削除しました。` : '整理が必要な証憑はありませんでした。');
+                      void totalUsage().then(setFileUsage);
+                    });
+                  }}
+                >
+                  不要な証憑を整理
+                </button>
+              </p>
+            )}
             <p className="mt-3 text-xs leading-relaxed text-slate-400">
               ※データはこの端末のブラウザ内(localStorage)にのみ保存されています。ブラウザのデータ消去や
               端末の故障で帳簿が失われるため、<strong className="text-slate-500">定期的にバックアップをダウンロード</strong>
               して保管してください(帳簿・書類は原則7年の保存義務があります)。
+              証憑ファイル(📎)はブラウザ内(IndexedDB)保存で、バックアップJSONには含まれません。
             </p>
           </Card>
         </div>

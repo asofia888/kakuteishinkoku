@@ -19,6 +19,7 @@ import {
   AppData,
   DEFAULT_ISSUER,
   DEFAULT_TAX_SETTINGS,
+  DeductionEntry,
   FixedAsset,
   Invoice,
   InventoryCount,
@@ -46,6 +47,7 @@ interface Store {
   issuer: IssuerProfile;
   assets: FixedAsset[];
   inventories: InventoryCount[];
+  deductions: DeductionEntry[];
 
   /** 取引を追加(取込・手入力)。按分は自動で再計算される */
   addTransactions: (
@@ -91,6 +93,8 @@ interface Store {
   deleteAsset: (id: string) => void;
   /** 年末棚卸高を登録(0を渡すとその年の記録を削除) */
   setInventory: (year: number, amount: number) => void;
+  /** 所得控除の入力を保存(年ごとに1件) */
+  setDeduction: (entry: DeductionEntry) => void;
 
   loadDemoData: () => void;
   clearAll: () => void;
@@ -113,6 +117,7 @@ function emptyData(): AppData {
     issuer: { ...DEFAULT_ISSUER },
     assets: [],
     inventories: [],
+    deductions: [],
   };
 }
 
@@ -206,6 +211,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       issuer: data.issuer,
       assets: data.assets,
       inventories: data.inventories,
+      deductions: data.deductions,
 
       addTransactions: (txs) =>
         mutate((prev) => ({
@@ -385,6 +391,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ...prev.inventories.filter((i) => i.year !== year),
             ...(amount > 0 ? [{ year, amount: Math.round(amount) }] : []),
           ].sort((a, b) => a.year - b.year),
+        })),
+
+      setDeduction: (entry) =>
+        mutate((prev) => ({
+          ...prev,
+          deductions: [...prev.deductions.filter((d) => d.year !== entry.year), entry].sort(
+            (a, b) => a.year - b.year,
+          ),
         })),
 
       loadDemoData: () => {

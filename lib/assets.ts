@@ -51,6 +51,23 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
     ];
   }
 
+  if (asset.method === 'deferred') {
+    // 繰延資産(開業費など)の任意償却: 指定された年・金額で、残額を限度に償却する
+    const deps = [...(asset.deferredDep ?? [])]
+      .filter((d) => d.amount > 0 && d.year >= acq.y)
+      .sort((a, b) => a.year - b.year);
+    const rows: DepreciationRow[] = [];
+    let book = asset.cost;
+    for (const d of deps) {
+      const dep = Math.min(Math.round(d.amount), book);
+      if (dep <= 0) continue;
+      rows.push({ year: d.year, months: 12, opening: book, dep, closing: book - dep });
+      book -= dep;
+      if (book <= 0) break;
+    }
+    return rows;
+  }
+
   if (asset.method === 'lump3') {
     // 一括償却資産: 3年均等(月割りなし)。除却しても続ける
     const third = Math.floor(asset.cost / 3);
@@ -150,7 +167,13 @@ export const METHOD_LABELS: Record<FixedAsset['method'], string> = {
   straight: '定額法',
   lump3: '一括償却(3年均等)',
   immediate: '少額特例(全額)',
+  deferred: '任意償却(開業費等)',
 };
+
+/** 繰延資産(開業費など。任意償却・B/Sでは「繰延資産」区分)か */
+export function isDeferred(asset: Pick<FixedAsset, 'method'>): boolean {
+  return asset.method === 'deferred';
+}
 
 /** よく使う耐用年数の例(国税庁「主な減価償却資産の耐用年数表」より) */
 export const USEFUL_LIFE_PRESETS: { label: string; years: number }[] = [
@@ -188,9 +211,11 @@ export function depreciationTableCsv(assets: FixedAsset[], year: number): string
         ? '措法28の2(少額)'
         : a.method === 'lump3'
           ? '一括償却(3年)'
-          : a.disposedDate && a.disposedDate.slice(0, 4) === String(year)
-            ? `除却 ${a.disposedDate}`
-            : '';
+          : a.method === 'deferred'
+            ? '繰延資産・任意償却'
+            : a.disposedDate && a.disposedDate.slice(0, 4) === String(year)
+              ? `除却 ${a.disposedDate}`
+              : '';
     lines.push(
       [
         csvCell(a.name),

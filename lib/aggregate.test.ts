@@ -3,6 +3,7 @@ import { EXCLUDED_ACCOUNT } from './accounts';
 import {
   availableYears,
   depreciationCandidates,
+  monthlyBreakdown,
   periodSlipCandidates,
   summarizeYear,
   summaryToCsv,
@@ -201,5 +202,48 @@ describe('減価償却・棚卸の損益への反映', () => {
     expect(s.inventoryClosing).toBe(50000);
     expect(s.totalExpense).toBe(200000 + 30000 + 80000 - 50000);
     expect(s.profit).toBe(-(200000 + 30000 + 30000));
+  });
+});
+
+describe('monthlyBreakdown: 月次推移', () => {
+  it('月別の売上・経費(按分後)を集計し、決算整理は12月に載る', () => {
+    const assets = [
+      {
+        id: 'a1',
+        name: 'PC',
+        acquiredDate: '2025-01-10',
+        cost: 120000,
+        method: 'straight' as const,
+        usefulLife: 4,
+        businessRatio: 100,
+        createdAt: 1,
+      },
+    ];
+    const rows = monthlyBreakdown(
+      [
+        tx({ date: '2026-01-25', amount: 100000, type: 'income', account: 'sales' }),
+        tx({ date: '2026-01-27', amount: 40000, type: 'expense', account: 'rent', businessAmount: 30000 }),
+        tx({ date: '2026-03-05', amount: 200000, type: 'income', account: 'sales' }),
+        tx({ date: '2026-03-10', amount: 9999, type: 'income', account: 'ar_collect' }), // 振替は除外
+      ],
+      2026,
+      assets,
+      [],
+    );
+    expect(rows[0]).toEqual({ month: 1, sales: 100000, expense: 30000, profit: 70000 });
+    expect(rows[2].sales).toBe(200000);
+    expect(rows[11].expense).toBe(30000); // 減価償却費(12万×0.25)は12月へ
+    const totalProfit = rows.reduce((s, r) => s + r.profit, 0);
+    expect(totalProfit).toBe(summarizeYear(
+      [
+        tx({ date: '2026-01-25', amount: 100000, type: 'income', account: 'sales' }),
+        tx({ date: '2026-01-27', amount: 40000, type: 'expense', account: 'rent', businessAmount: 30000 }),
+        tx({ date: '2026-03-05', amount: 200000, type: 'income', account: 'sales' }),
+        tx({ date: '2026-03-10', amount: 9999, type: 'income', account: 'ar_collect' }),
+      ],
+      2026,
+      assets,
+      [],
+    ).profit);
   });
 });

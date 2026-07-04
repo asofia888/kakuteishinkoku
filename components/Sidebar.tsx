@@ -10,6 +10,7 @@ const NAV = [
   { href: '/books', label: '帳簿・決算書(複式簿記)', icon: '📚' },
   { href: '/assets', label: '固定資産台帳(減価償却)', icon: '🗄' },
   { href: '/tax', label: '消費税(インボイス)', icon: '🧾' },
+  { href: '/simulation', label: '所得税シミュレーション', icon: '🧮' },
   { href: '/rules', label: '自動仕訳ルール設定', icon: '🤖' },
   { href: '/anbun', label: '家事按分設定', icon: '🏠' },
 ];
