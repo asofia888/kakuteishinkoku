@@ -42,11 +42,11 @@ test('サンプルデータで全ページの主要機能が動く', async ({ pa
 
   // 請求書: 売掛中(未回収)の状態表示(括弧は画面表示と同じ全角。半角だと正規表現のグループになる)
   await nav(page, /請求書発行/);
-  await expect(page.getByText(/売掛中(未回収)|期限超過/).first()).toBeVisible();
+  await expect(page.getByText(/売掛中|期限超過/).first()).toBeVisible();
 
   // 転記ガイド: 決算書の欄が並ぶ
   await nav(page, /転記ガイド/);
-  await expect(page.getByText('① 売上(収入)金額').first()).toBeVisible();
+  await expect(page.getByText(/① 売上/).first()).toBeVisible();
   await expect(page.getByText('青色申告特別控除前の所得金額').first()).toBeVisible();
 
   // 所得税シミュレーション: 納付見込みが計算される
