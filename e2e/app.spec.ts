@@ -40,7 +40,7 @@ test('サンプルデータで全ページの主要機能が動く', async ({ pa
   await nav(page, /固定資産台帳/);
   await expect(page.getByText('ノートPC(MacBook Pro)').first()).toBeVisible();
 
-  // 請求書: 売掛中(未回収)の状態表示
+  // 請求書: 売掛中(未回収)の状態表示(括弧は画面表示と同じ全角。半角だと正規表現のグループになる)
   await nav(page, /請求書発行/);
   await expect(page.getByText(/売掛中(未回収)|期限超過/).first()).toBeVisible();
 
