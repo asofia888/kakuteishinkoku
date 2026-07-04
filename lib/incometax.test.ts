@@ -114,6 +114,13 @@ describe('simulateIncomeTax', () => {
     expect(eq.amount).toBe(50_000);
   });
 
+  it('復興特別所得税は2037年分まで(2038年分以降は0)', () => {
+    const r2037 = simulateIncomeTax(5_000_000, ded({ year: 2037 }));
+    const r2038 = simulateIncomeTax(5_000_000, ded({ year: 2038 }));
+    expect(r2037.reconstructionTax).toBeGreaterThan(0);
+    expect(r2038.reconstructionTax).toBe(0);
+  });
+
   it('個人事業税は青色控除前の所得から事業主控除290万円を引いて5%', () => {
     const r = simulateIncomeTax(5_000_000, ded({}));
     expect(r.businessTaxEst).toBe((5_000_000 - 2_900_000) * 0.05);

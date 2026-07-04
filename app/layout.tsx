@@ -1,20 +1,29 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import React from 'react';
+import PwaRegister from '@/components/PwaRegister';
 import SaveErrorBanner from '@/components/SaveErrorBanner';
 import Sidebar from '@/components/Sidebar';
 import { StoreProvider } from '@/lib/store';
 import './globals.css';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+
 export const metadata: Metadata = {
   title: '申告スナップ | 確定申告・帳簿管理',
   description:
     '個人事業主向けの確定申告(青色申告)帳簿管理アプリ。CSV取込・自動仕訳・家事按分・決算書集計。データは端末内(localStorage)にのみ保存されます。',
+  manifest: `${basePath}/manifest.webmanifest`,
+};
+
+export const viewport: Viewport = {
+  themeColor: '#2563eb',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ja">
       <body>
+        <PwaRegister />
         <StoreProvider>
           <SaveErrorBanner />
           <div className="flex min-h-screen flex-col md:flex-row">

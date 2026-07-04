@@ -126,7 +126,8 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
   const totalDeductions = breakdown.reduce((s, l) => s + l.amount, 0);
   const taxable = Math.floor(Math.max(0, totalIncome - totalDeductions) / 1000) * 1000;
   const incomeTax = incomeTaxBase(taxable);
-  const reconstructionTax = Math.floor(incomeTax * 0.021);
+  // 復興特別所得税は2037年分まで
+  const reconstructionTax = d.year <= 2037 ? Math.floor(incomeTax * 0.021) : 0;
   const totalTax = incomeTax + reconstructionTax;
 
   const rawBalance = totalTax - d.withholding;

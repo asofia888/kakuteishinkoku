@@ -20,3 +20,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # E2E: 本番ビルドを配信して主要動線をブラウザで検証
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

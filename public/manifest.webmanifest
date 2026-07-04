@@ -1,0 +1,19 @@
+{
+  "name": "申告スナップ — 青色申告の帳簿管理",
+  "short_name": "申告スナップ",
+  "description": "個人事業主向けの確定申告(青色申告)・帳簿管理アプリ。データは端末内にのみ保存されます。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#2563eb",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
