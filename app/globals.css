@@ -1,0 +1,38 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-100 text-slate-800 antialiased;
+}
+
+/* 数値セルは等幅で桁を揃える */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 請求書の印刷: 請求書シート(.invoice-sheet)だけを印刷する */
+@media print {
+  body {
+    background: white;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .invoice-sheet,
+  .invoice-sheet * {
+    visibility: visible;
+  }
+  .invoice-sheet {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
