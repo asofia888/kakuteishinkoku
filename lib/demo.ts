@@ -211,7 +211,7 @@ export function buildDemoData(): AppData {
       { id: uid(), account: 'communication', type: 'percent', value: 60 },
     ],
     openingBalances: [
-      { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0 },
+      { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 },
     ],
     taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
     invoices: [
@@ -274,5 +274,16 @@ export function buildDemoData(): AppData {
     ],
     inventories: [],
     deductions: [],
+    payrolls: [],
+    partners: [
+      {
+        id: uid(),
+        name: '株式会社ABC',
+        invoiceRegNumber: '',
+        memo: '毎月の業務委託(25日払い)',
+        createdAt: Date.now(),
+      },
+      { id: uid(), name: 'XYZデザイン', invoiceRegNumber: '', memo: '', createdAt: Date.now() },
+    ],
   };
 }

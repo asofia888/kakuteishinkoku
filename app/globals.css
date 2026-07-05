@@ -13,16 +13,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* 請求書の印刷: 請求書シート(.invoice-sheet)だけを印刷する */
+/* 請求書の印刷: プレビュー(.invoice-sheet)を開いているときだけ請求書シートのみを印刷する。
+   :has で限定しないと帳簿・転記ガイドなど他ページの印刷が白紙になる。
+   (:has 未対応の古いブラウザでは「請求書だけ」にならず全体が印刷される=白紙よりは安全) */
 @media print {
   body {
     background: white;
   }
-  body * {
+  body:has(.invoice-sheet) * {
     visibility: hidden;
   }
-  .invoice-sheet,
-  .invoice-sheet * {
+  body:has(.invoice-sheet) .invoice-sheet,
+  body:has(.invoice-sheet) .invoice-sheet * {
     visibility: visible;
   }
   .invoice-sheet {

@@ -1,55 +1,28 @@
+import {
+  basicDeductionTableFor,
+  BUSINESS_TAX,
+  incomeTaxBracketsFor,
+  RECONSTRUCTION_TAX,
+  RESIDENT_TAX,
+} from './taxparams';
 import { DeductionEntry } from './types';
 
 /**
  * 所得税のシミュレーション(事業所得のみの個人・青色申告を想定した概算)。
  * 課税所得は1,000円未満切り捨て、申告納税額は100円未満切り捨て。
- * 復興特別所得税(2.1%)は2037年分まで。
+ * 税率・控除額などの年度パラメータは lib/taxparams.ts に集約している。
  */
 
-/** 所得税の速算表(平成27年分以後) */
-const BRACKETS: { limit: number; rate: number; deduction: number }[] = [
-  { limit: 1_950_000, rate: 0.05, deduction: 0 },
-  { limit: 3_300_000, rate: 0.1, deduction: 97_500 },
-  { limit: 6_950_000, rate: 0.2, deduction: 427_500 },
-  { limit: 9_000_000, rate: 0.23, deduction: 636_000 },
-  { limit: 18_000_000, rate: 0.33, deduction: 1_536_000 },
-  { limit: 40_000_000, rate: 0.4, deduction: 2_796_000 },
-  { limit: Infinity, rate: 0.45, deduction: 4_796_000 },
-];
-
 /** 課税所得(1,000円未満切り捨て済み)に対する所得税額(復興税を含まない) */
-export function incomeTaxBase(taxable: number): number {
+export function incomeTaxBase(taxable: number, year = new Date().getFullYear()): number {
   if (taxable <= 0) return 0;
-  const b = BRACKETS.find((x) => taxable <= x.limit)!;
+  const b = incomeTaxBracketsFor(year).find((x) => taxable <= x.limit)!;
   return Math.floor(taxable * b.rate - b.deduction);
 }
 
-/**
- * 基礎控除(合計所得金額による)。令和7年度税制改正に対応:
- * - 2024年分まで: 48万円(合計所得2,400万円超は逓減)
- * - 2025年分以降: 58万円(合計所得2,350万円以下)。合計所得132万円以下は95万円(恒久)
- * - 2025・2026年分のみ: 中間所得層への時限上乗せ(88万/68万/63万円)
- */
+/** 基礎控除(合計所得金額と年分による。テーブルは lib/taxparams.ts) */
 export function basicDeduction(totalIncome: number, year: number): number {
-  if (year <= 2024) {
-    if (totalIncome <= 24_000_000) return 480_000;
-    if (totalIncome <= 24_500_000) return 320_000;
-    if (totalIncome <= 25_000_000) return 160_000;
-    return 0;
-  }
-  // 令和7年(2025年)分以降
-  if (totalIncome <= 1_320_000) return 950_000;
-  if (year <= 2026) {
-    // 令和7・8年分のみの時限上乗せ
-    if (totalIncome <= 3_360_000) return 880_000;
-    if (totalIncome <= 4_890_000) return 680_000;
-    if (totalIncome <= 6_550_000) return 630_000;
-  }
-  if (totalIncome <= 23_500_000) return 580_000;
-  if (totalIncome <= 24_000_000) return 480_000;
-  if (totalIncome <= 24_500_000) return 320_000;
-  if (totalIncome <= 25_000_000) return 160_000;
-  return 0;
+  return basicDeductionTableFor(year).find((s) => totalIncome <= s.limit)!.amount;
 }
 
 export interface DeductionBreakdownLine {
@@ -125,16 +98,21 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
 
   const totalDeductions = breakdown.reduce((s, l) => s + l.amount, 0);
   const taxable = Math.floor(Math.max(0, totalIncome - totalDeductions) / 1000) * 1000;
-  const incomeTax = incomeTaxBase(taxable);
-  // 復興特別所得税は2037年分まで
-  const reconstructionTax = d.year <= 2037 ? Math.floor(incomeTax * 0.021) : 0;
+  const incomeTax = incomeTaxBase(taxable, d.year);
+  const reconstructionTax =
+    d.year >= RECONSTRUCTION_TAX.fromYear && d.year <= RECONSTRUCTION_TAX.toYear
+      ? Math.floor(incomeTax * RECONSTRUCTION_TAX.rate)
+      : 0;
   const totalTax = incomeTax + reconstructionTax;
 
   const rawBalance = totalTax - d.withholding;
   const balanceDue = rawBalance > 0 ? Math.floor(rawBalance / 100) * 100 : rawBalance;
 
-  const residentTaxEst = taxable > 0 ? Math.floor(taxable * 0.1) + 5_000 : 0;
-  const businessTaxEst = Math.floor(Math.max(0, profit - 2_900_000) * 0.05);
+  const residentTaxEst =
+    taxable > 0 ? Math.floor(taxable * RESIDENT_TAX.rate) + RESIDENT_TAX.perCapita : 0;
+  const businessTaxEst = Math.floor(
+    Math.max(0, profit - BUSINESS_TAX.ownerDeduction) * BUSINESS_TAX.rate,
+  );
 
   return {
     blueApplied,

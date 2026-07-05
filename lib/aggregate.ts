@@ -1,5 +1,6 @@
 import { accountLabel, EXPENSE_ACCOUNTS, INCOME_ACCOUNTS, isExcluded, isSettlement } from './accounts';
 import { yearDepreciationTotals } from './assets';
+import { SMALL_ASSET } from './taxparams';
 import { FixedAsset, InventoryCount, Transaction } from './types';
 
 export interface ExpenseLine {
@@ -181,8 +182,8 @@ export function monthlyBreakdown(
   }));
 }
 
-/** これ以上の取得価額は原則、減価償却が必要になる金額(10万円) */
-export const DEPRECIATION_MIN = 100_000;
+/** これ以上の取得価額は原則、減価償却が必要になる金額(10万円。lib/taxparams.ts 参照) */
+export const DEPRECIATION_MIN = SMALL_ASSET.depreciationMin;
 
 /**
  * 10万円以上なのに「消耗品費」に仕訳された取引(減価償却の検討が必要な候補)。

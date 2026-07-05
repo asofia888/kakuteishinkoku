@@ -7,6 +7,7 @@ const NAV = [
   { href: '/', label: 'ダッシュボード', icon: '📊' },
   { href: '/transactions', label: '取引一覧(CSV読込)', icon: '📒' },
   { href: '/invoices', label: '請求書発行', icon: '📄' },
+  { href: '/payroll', label: '給与(源泉・預り金)', icon: '👥' },
   { href: '/books', label: '帳簿・決算書(複式簿記)', icon: '📚' },
   { href: '/assets', label: '固定資産台帳(減価償却)', icon: '🗄' },
   { href: '/tax', label: '消費税(インボイス)', icon: '🧾' },
@@ -48,7 +49,7 @@ export default function Sidebar() {
           );
         })}
       </nav>
-      <div className="hidden px-5 py-6 text-xs leading-relaxed text-slate-400 md:block">
+      <div className="hidden px-5 py-6 text-xs leading-relaxed text-slate-500 md:block">
         データはこの端末のブラウザ内
         (localStorage)にのみ保存され、外部には送信されません。
       </div>

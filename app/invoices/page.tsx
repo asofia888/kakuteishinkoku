@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
+import { Alert, btn, Card, EmptyState, input, ModalShell, PageHeader, selectCls } from '@/components/ui';
 import { dateLabel, today, yen } from '@/lib/format';
 import {
   computeInvoiceTotals,
@@ -80,7 +80,7 @@ export default function InvoicesPage() {
   };
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -131,6 +131,8 @@ export default function InvoicesPage() {
                 store.addInvoice(clean);
                 setMessage(`請求書 ${clean.number} を作成しました。「表示・印刷」からPDF保存できます。`);
               }
+              // 請求先を取引先マスタへ自動登録(既存なら何もしない)
+              store.ensurePartner(clean.client);
               setDraft(null);
             }}
           />
@@ -179,7 +181,7 @@ export default function InvoicesPage() {
                         <td className="tabular px-2 py-2 text-right whitespace-nowrap">
                           {yen(totals.billedAmount)}
                           {totals.withholdingTax > 0 && (
-                            <span className="ml-1 text-[10px] text-slate-400">源泉後</span>
+                            <span className="ml-1 text-[10px] text-slate-500">源泉後</span>
                           )}
                         </td>
                         <td className="px-2 py-2 whitespace-nowrap">
@@ -298,11 +300,13 @@ export default function InvoicesPage() {
               </table>
             </div>
           )}
-          <p className="mt-3 text-xs leading-relaxed text-slate-400">
+          <p className="mt-3 text-xs leading-relaxed text-slate-500">
             「売掛計上」すると発行日付で売上(決済手段: 売掛金)が登録されます。入金があったら、取引一覧で銀行明細の入金行の科目を「売掛金の回収」にすると消し込まれます。
             源泉徴収ありの請求書は、源泉分が「事業主貸」として自動で差し引かれ、売掛金残高が実際の入金予定額と一致します。
           </p>
         </Card>
+
+        <PartnersCard />
       </div>
 
       {preview && (
@@ -313,6 +317,102 @@ export default function InvoicesPage() {
         />
       )}
     </>
+  );
+}
+
+/** 取引先マスタと取引先別の請求集計 */
+function PartnersCard() {
+  const store = useStore();
+  const stats = useMemo(() => {
+    const txIds = new Set(store.transactions.map((t) => t.id));
+    const map = new Map<string, { count: number; total: number; unpaid: number }>();
+    for (const inv of store.invoices) {
+      const key = inv.client.trim();
+      if (!key) continue;
+      const cur = map.get(key) ?? { count: 0, total: 0, unpaid: 0 };
+      const billed = computeInvoiceTotals(inv).billedAmount;
+      cur.count++;
+      cur.total += billed;
+      const registered = (inv.linkedTxIds ?? []).some((id) => txIds.has(id));
+      if (registered && !inv.paidDate) cur.unpaid += billed;
+      map.set(key, cur);
+    }
+    return map;
+  }, [store.invoices, store.transactions]);
+
+  if (store.partners.length === 0) return null;
+
+  return (
+    <Card title={`取引先(${store.partners.length}件)── 請求書の保存時に自動登録されます`}>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[820px] text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
+              <th className="py-2 pr-2 font-medium">取引先名</th>
+              <th className="px-2 py-2 text-right font-medium">請求件数</th>
+              <th className="px-2 py-2 text-right font-medium">請求合計</th>
+              <th className="px-2 py-2 text-right font-medium">未回収</th>
+              <th className="px-2 py-2 font-medium">相手の登録番号(メモ)</th>
+              <th className="px-2 py-2 font-medium">メモ</th>
+              <th className="px-2 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {store.partners.map((p) => {
+              const s = stats.get(p.name);
+              return (
+                <tr key={p.id} className="border-b border-slate-100">
+                  <td className="max-w-[200px] truncate py-2 pr-2 font-medium" title={p.name}>
+                    {p.name}
+                  </td>
+                  <td className="tabular px-2 py-2 text-right">{s?.count ?? 0}</td>
+                  <td className="tabular px-2 py-2 text-right">{s ? yen(s.total) : '—'}</td>
+                  <td className="tabular px-2 py-2 text-right">
+                    {s && s.unpaid > 0 ? (
+                      <span className="font-medium text-rose-600">{yen(s.unpaid)}</span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <input
+                      type="text"
+                      aria-label={`${p.name} の登録番号`}
+                      className="w-40 rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+                      placeholder="T1234567890123"
+                      value={p.invoiceRegNumber}
+                      onChange={(e) => store.updatePartner(p.id, { invoiceRegNumber: e.target.value })}
+                    />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input
+                      type="text"
+                      aria-label={`${p.name} のメモ`}
+                      className="w-full min-w-32 rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+                      value={p.memo}
+                      onChange={(e) => store.updatePartner(p.id, { memo: e.target.value })}
+                    />
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    <button
+                      type="button"
+                      className={btn.danger}
+                      onClick={() => {
+                        if (confirm(`取引先「${p.name}」を削除しますか?(請求書は削除されません)`)) {
+                          store.deletePartner(p.id);
+                        }
+                      }}
+                    >
+                      削除
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 
@@ -336,11 +436,11 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
           <p className="text-sm text-slate-600">
             {issuer.name}
             {issuer.invoiceRegNumber && (
-              <span className="ml-2 text-xs text-slate-400">登録番号: {issuer.invoiceRegNumber}</span>
+              <span className="ml-2 text-xs text-slate-500">登録番号: {issuer.invoiceRegNumber}</span>
             )}
           </p>
         ) : (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-slate-500">
             未登録です。氏名・登録番号・振込先を登録すると請求書に自動で印字されます。
           </p>
         )
@@ -354,8 +454,9 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
           className="grid gap-3 sm:grid-cols-2"
         >
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">氏名・屋号 *</label>
+            <label htmlFor="inv-issuer-name" className="mb-1 block text-xs font-medium text-slate-500">氏名・屋号 *</label>
             <input
+              id="inv-issuer-name"
               type="text"
               className={`${input} w-full`}
               value={form.name}
@@ -364,10 +465,11 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">
+            <label htmlFor="inv-issuer-reg-number" className="mb-1 block text-xs font-medium text-slate-500">
               インボイス登録番号(T+13桁・未登録なら空欄)
             </label>
             <input
+              id="inv-issuer-reg-number"
               type="text"
               className={`${input} w-full`}
               placeholder="T1234567890123"
@@ -381,8 +483,9 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">住所</label>
+            <label htmlFor="inv-issuer-address" className="mb-1 block text-xs font-medium text-slate-500">住所</label>
             <input
+              id="inv-issuer-address"
               type="text"
               className={`${input} w-full`}
               value={form.address}
@@ -391,8 +494,9 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">電話番号</label>
+              <label htmlFor="inv-issuer-tel" className="mb-1 block text-xs font-medium text-slate-500">電話番号</label>
               <input
+                id="inv-issuer-tel"
                 type="text"
                 className={`${input} w-full`}
                 value={form.tel}
@@ -400,8 +504,9 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">メール</label>
+              <label htmlFor="inv-issuer-email" className="mb-1 block text-xs font-medium text-slate-500">メール</label>
               <input
+                id="inv-issuer-email"
                 type="text"
                 className={`${input} w-full`}
                 value={form.email}
@@ -410,10 +515,11 @@ function IssuerCard({ issuer, onSave }: { issuer: IssuerProfile; onSave: (p: Iss
             </div>
           </div>
           <div className="sm:col-span-2">
-            <label className="mb-1 block text-xs font-medium text-slate-500">
+            <label htmlFor="inv-issuer-bank-info" className="mb-1 block text-xs font-medium text-slate-500">
               振込先(銀行名・支店・口座番号・名義)
             </label>
             <textarea
+              id="inv-issuer-bank-info"
               className={`${input} w-full`}
               rows={2}
               placeholder={'○○銀行 △△支店(普通)1234567\nヤマダ タロウ'}
@@ -444,6 +550,7 @@ function InvoiceForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const { partners } = useStore();
   const set = (patch: Partial<InvoiceDraft>) => onChange({ ...draft, ...patch });
   const setItem = (id: string, patch: Partial<InvoiceItem>) =>
     set({ items: draft.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
@@ -453,8 +560,9 @@ function InvoiceForm({
     <Card title={draft.id ? `請求書 ${draft.number} を編集` : '新しい請求書'}>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">請求書番号 *</label>
+          <label htmlFor="inv-number" className="mb-1 block text-xs font-medium text-slate-500">請求書番号 *</label>
           <input
+            id="inv-number"
             type="text"
             className={`${input} w-full`}
             value={draft.number}
@@ -463,8 +571,9 @@ function InvoiceForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">発行日 *</label>
+          <label htmlFor="inv-issue-date" className="mb-1 block text-xs font-medium text-slate-500">発行日 *</label>
           <input
+            id="inv-issue-date"
             type="date"
             className={`${input} w-full`}
             value={draft.issueDate}
@@ -473,8 +582,9 @@ function InvoiceForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">支払期限</label>
+          <label htmlFor="inv-due-date" className="mb-1 block text-xs font-medium text-slate-500">支払期限</label>
           <input
+            id="inv-due-date"
             type="date"
             className={`${input} w-full`}
             value={draft.dueDate}
@@ -482,8 +592,9 @@ function InvoiceForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">敬称</label>
+          <label htmlFor="inv-client-suffix" className="mb-1 block text-xs font-medium text-slate-500">敬称</label>
           <select
+            id="inv-client-suffix"
             className={selectCls}
             value={draft.clientSuffix}
             onChange={(e) => set({ clientSuffix: e.target.value })}
@@ -493,19 +604,29 @@ function InvoiceForm({
           </select>
         </div>
         <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-medium text-slate-500">請求先名 *</label>
+          <label htmlFor="inv-client" className="mb-1 block text-xs font-medium text-slate-500">
+            請求先名 *(入力すると取引先マスタに自動登録されます)
+          </label>
           <input
+            id="inv-client"
             type="text"
             className={`${input} w-full`}
             placeholder="株式会社ABC"
+            list="partner-list"
             value={draft.client}
             onChange={(e) => set({ client: e.target.value })}
             required
           />
+          <datalist id="partner-list">
+            {partners.map((p) => (
+              <option key={p.id} value={p.name} />
+            ))}
+          </datalist>
         </div>
         <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-medium text-slate-500">件名</label>
+          <label htmlFor="inv-title" className="mb-1 block text-xs font-medium text-slate-500">件名</label>
           <input
+            id="inv-title"
             type="text"
             className={`${input} w-full`}
             placeholder="12月分 業務委託"
@@ -531,11 +652,12 @@ function InvoiceForm({
             </tr>
           </thead>
           <tbody>
-            {draft.items.map((item) => (
+            {draft.items.map((item, idx) => (
               <tr key={item.id} className="border-b border-slate-100">
                 <td className="py-1.5 pr-2">
                   <input
                     type="text"
+                    aria-label={`明細${idx + 1}の品目・内容`}
                     className={`${input} w-full`}
                     placeholder="デザイン制作(12月分)"
                     value={item.description}
@@ -545,6 +667,7 @@ function InvoiceForm({
                 <td className="px-2 py-1.5">
                   <input
                     type="number"
+                    aria-label={`明細${idx + 1}の数量`}
                     className={`${input} w-full text-right`}
                     min={0}
                     step="any"
@@ -555,6 +678,7 @@ function InvoiceForm({
                 <td className="px-2 py-1.5">
                   <input
                     type="number"
+                    aria-label={`明細${idx + 1}の単価`}
                     className={`${input} w-full text-right`}
                     min={0}
                     value={item.unitPrice}
@@ -563,6 +687,7 @@ function InvoiceForm({
                 </td>
                 <td className="px-2 py-1.5">
                   <select
+                    aria-label={`明細${idx + 1}の税率`}
                     className={selectCls}
                     value={item.taxRate}
                     onChange={(e) => setItem(item.id, { taxRate: Number(e.target.value) as 10 | 8 | 0 })}
@@ -618,8 +743,9 @@ function InvoiceForm({
             源泉徴収(10.21%)を差し引いて請求する
           </label>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-500">備考</label>
+            <label htmlFor="inv-notes" className="mb-1 block text-xs font-medium text-slate-500">備考</label>
             <textarea
+              id="inv-notes"
               className={`${input} w-80 max-w-full`}
               rows={2}
               placeholder="いつもお世話になっております。"
@@ -685,8 +811,11 @@ function InvoicePreview({
   const hasReduced = invoice.items.some((i) => i.taxRate === 8);
 
   return (
-    <div className="fixed inset-0 z-50 overflow-auto bg-slate-900/60 p-4 md:p-8" onClick={onClose}>
-      <div className="mx-auto max-w-[820px]" onClick={(e) => e.stopPropagation()}>
+    <ModalShell
+      label={`請求書プレビュー ${invoice.number}`}
+      onClose={onClose}
+      className="mx-auto max-w-[820px]"
+    >
         <div className="mb-3 flex justify-end gap-2 print:hidden">
           <button type="button" className={`${btn.primary} bg-slate-700 hover:bg-slate-800`} onClick={() => window.print()}>
             🖨 印刷 / PDF保存
@@ -810,7 +939,6 @@ function InvoicePreview({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

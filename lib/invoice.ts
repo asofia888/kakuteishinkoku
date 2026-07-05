@@ -1,5 +1,6 @@
 import { EXCLUDED_ACCOUNT } from './accounts';
 import { taxInclusive } from './tax';
+import { REWARD_WITHHOLDING } from './taxparams';
 import { Invoice, InvoiceItem, Transaction } from './types';
 
 /**
@@ -44,9 +45,10 @@ export interface InvoiceTotals {
  * 請求書で本体と消費税を区分しているため、税抜額を対象にできる。
  */
 export function withholdingAmount(base: number): number {
+  const { rate, rateOver, threshold } = REWARD_WITHHOLDING;
   if (base <= 0) return 0;
-  if (base <= 1_000_000) return Math.floor(base * 0.1021);
-  return Math.floor(1_000_000 * 0.1021 + (base - 1_000_000) * 0.2042);
+  if (base <= threshold) return Math.floor(base * rate);
+  return Math.floor(threshold * rate + (base - threshold) * rateOver);
 }
 
 /** 請求書全体の金額を計算する */

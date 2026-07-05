@@ -113,4 +113,21 @@ describe('summarizeTax: 年間集計', () => {
     expect(s.sales8).toBe(1_080_000);
     expect(s.salesTax).toBe(80_000);
   });
+
+  it('2割特例は個人事業者は2026年分まで。期限外の年分は本則課税へフォールバックする', () => {
+    const sale = (date: string) =>
+      tx({ description: '報酬', type: 'income', account: 'sales', amount: 1_100_000, date });
+    const special20: TaxSettings = { taxable: true, method: 'special20', simplifiedType: 5 };
+
+    const in2026 = summarizeTax([sale('2026-06-15')], 2026, special20);
+    expect(in2026.special20Available).toBe(true);
+    expect(in2026.paySelected).toBe(in2026.paySpecial20); // 100,000×20% = 20,000
+
+    const in2027 = summarizeTax([sale('2027-06-15')], 2027, special20);
+    expect(in2027.special20Available).toBe(false);
+    expect(in2027.paySelected).toBe(in2027.payGeneral); // 2割特例の20,000ではなく本則の100,000
+
+    const in2022 = summarizeTax([sale('2022-06-15')], 2022, special20);
+    expect(in2022.special20Available).toBe(false); // 制度開始(2023年10月)前
+  });
 });

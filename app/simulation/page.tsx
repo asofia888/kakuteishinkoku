@@ -53,7 +53,7 @@ export default function SimulationPage() {
   const saved = store.deductions.find((d) => d.year === year);
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -64,7 +64,7 @@ export default function SimulationPage() {
       />
       <div className="space-y-6">
         <div className="flex items-center gap-3">
-          <select className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          <select aria-label="対象年度" className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
             {years.map((y) => (
               <option key={y} value={y}>
                 {y}年分
@@ -136,8 +136,9 @@ function SimulationBody({
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="所得控除の入力">
           <div className="mb-4">
-            <label className="mb-1 block text-xs font-medium text-slate-500">青色申告特別控除</label>
+            <label htmlFor="sim-blue-deduction" className="mb-1 block text-xs font-medium text-slate-500">青色申告特別控除</label>
             <select
+              id="sim-blue-deduction"
               className={selectCls}
               value={form.blueDeduction}
               onChange={(e) => set({ blueDeduction: Number(e.target.value) as DeductionEntry['blueDeduction'] })}
@@ -150,10 +151,11 @@ function SimulationBody({
           <div className="grid gap-3 sm:grid-cols-2">
             {FIELDS.map((f) => (
               <div key={f.key}>
-                <label className="mb-1 block text-xs font-medium text-slate-500" title={f.hint}>
+                <label htmlFor={`sim-${f.key.replace(/([A-Z])/g, '-$1').toLowerCase()}`} className="mb-1 block text-xs font-medium text-slate-500" title={f.hint}>
                   {f.label}
                 </label>
                 <input
+                  id={`sim-${f.key.replace(/([A-Z])/g, '-$1').toLowerCase()}`}
                   type="number"
                   min={0}
                   className={`${input} w-full text-right`}
@@ -161,12 +163,13 @@ function SimulationBody({
                   placeholder="0"
                   onChange={(e) => set({ [f.key]: num(e.target.value) } as Partial<DeductionEntry>)}
                 />
-                <p className="mt-0.5 text-[10px] leading-snug text-slate-400">{f.hint}</p>
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-500">{f.hint}</p>
               </div>
             ))}
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">源泉徴収税額</label>
+              <label htmlFor="sim-withholding" className="mb-1 block text-xs font-medium text-slate-500">源泉徴収税額</label>
               <input
+                id="sim-withholding"
                 type="number"
                 min={0}
                 className={`${input} w-full text-right`}
@@ -247,12 +250,12 @@ function SimulationBody({
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <div className="text-xs text-slate-500">住民税の概算(翌年度)</div>
               <div className="tabular mt-1 font-semibold">{yen(result.residentTaxEst)}</div>
-              <div className="mt-1 text-[10px] text-slate-400">所得割10% + 均等割約5,000円の目安</div>
+              <div className="mt-1 text-[10px] text-slate-500">所得割10% + 均等割約5,000円の目安</div>
             </div>
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <div className="text-xs text-slate-500">個人事業税の概算</div>
               <div className="tabular mt-1 font-semibold">{yen(result.businessTaxEst)}</div>
-              <div className="mt-1 text-[10px] text-slate-400">事業主控除290万円・税率5%の業種の場合</div>
+              <div className="mt-1 text-[10px] text-slate-500">事業主控除290万円・税率5%の業種の場合</div>
             </div>
           </div>
 

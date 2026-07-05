@@ -27,7 +27,7 @@ const METHODS: { id: TaxSettings['method']; label: string; hint: string }[] = [
   {
     id: 'special20',
     label: '2割特例',
-    hint: '売上の消費税 × 20% を納付(インボイス登録を機に課税事業者になった小規模事業者向け・届出不要)',
+    hint: '売上の消費税 × 20% を納付(インボイス登録を機に課税事業者になった小規模事業者向け・届出不要。個人は2026年分の申告まで)',
   },
 ];
 
@@ -49,7 +49,7 @@ export default function TaxPage() {
   const taxableSales = summary.sales10 + summary.sales8;
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -70,7 +70,7 @@ export default function TaxPage() {
             課税事業者である(インボイス発行事業者に登録している)
           </label>
           {!settings.taxable && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-400">
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">
               免税事業者の間は申告・納付は不要です(下の集計は参考表示)。基準期間(2年前)の課税売上高が1,000万円を超えると課税事業者になります。
             </p>
           )}
@@ -88,16 +88,17 @@ export default function TaxPage() {
                 />
                 <span>
                   <span className="font-medium">{m.label}</span>
-                  <span className="block text-xs text-slate-400">{m.hint}</span>
+                  <span className="block text-xs text-slate-500">{m.hint}</span>
                 </span>
               </label>
             ))}
             {settings.method === 'simplified' && (
               <div className="ml-6">
-                <label className="mb-1 block text-xs font-medium text-slate-500">
+                <label htmlFor="tax-simplified-type" className="mb-1 block text-xs font-medium text-slate-500">
                   事業区分(みなし仕入率)
                 </label>
                 <select
+                  id="tax-simplified-type"
                   className={selectCls}
                   value={settings.simplifiedType}
                   disabled={!settings.taxable}
@@ -120,6 +121,7 @@ export default function TaxPage() {
 
         <div className="flex items-center gap-3">
           <select
+            aria-label="対象年度"
             className={selectCls}
             value={year}
             onChange={(e) => setYear(Number(e.target.value))}
@@ -131,7 +133,7 @@ export default function TaxPage() {
             ))}
           </select>
           {!settings.taxable && (
-            <span className="text-xs text-slate-400">免税事業者のため参考表示です</span>
+            <span className="text-xs text-slate-500">免税事業者のため参考表示です</span>
           )}
         </div>
 
@@ -140,6 +142,14 @@ export default function TaxPage() {
             {year}年の課税売上高が<strong>1,000万円を超えています</strong>(
             {yen(taxableSales)})。原則として{year + 2}
             年から課税事業者になります(納税資金の準備と、簡易課税・2割特例の検討を)。
+          </Alert>
+        )}
+
+        {settings.taxable && settings.method === 'special20' && !summary.special20Available && (
+          <Alert tone="warning">
+            <strong>2割特例は{year}年分には適用できません</strong>
+            (個人事業者は2026年分の申告が最後です)。この年分の納付見込みは
+            <strong>本則課税</strong>で表示しています。簡易課税を使う場合は事前の届出が必要です。
           </Alert>
         )}
 
@@ -156,7 +166,11 @@ export default function TaxPage() {
             sub="家事按分後の経費計上分のみ"
           />
           <StatCard
-            label={`納付見込み(${METHODS.find((m) => m.id === settings.method)?.label ?? ''})`}
+            label={`納付見込み(${
+              settings.method === 'special20' && !summary.special20Available
+                ? '本則課税・2割特例は対象外'
+                : (METHODS.find((m) => m.id === settings.method)?.label ?? '')
+            })`}
             value={yen(Math.max(0, summary.paySelected))}
             sub={summary.paySelected < 0 ? `還付見込み ${yen(-summary.paySelected)}` : undefined}
             tone="positive"
@@ -196,26 +210,37 @@ export default function TaxPage() {
                       pay: summary.paySpecial20,
                     },
                   ] as const
-                ).map((row) => (
-                  <tr
-                    key={row.id}
-                    className={`border-b border-slate-100 ${row.id === settings.method ? 'bg-blue-50/60 font-medium' : ''}`}
-                  >
-                    <td className="py-2 pr-2">
-                      {row.label}
-                      {row.id === settings.method && (
-                        <span className="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-                          選択中
-                        </span>
+                ).map((row) => {
+                  const expired = row.id === 'special20' && !summary.special20Available;
+                  return (
+                    <tr
+                      key={row.id}
+                      className={`border-b border-slate-100 ${row.id === settings.method && !expired ? 'bg-blue-50/60 font-medium' : ''} ${expired ? 'text-slate-500' : ''}`}
+                    >
+                      <td className="py-2 pr-2">
+                        {row.label}
+                        {row.id === settings.method && !expired && (
+                          <span className="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                            選択中
+                          </span>
+                        )}
+                      </td>
+                      {expired ? (
+                        <td className="px-2 py-2 text-right text-xs" colSpan={3}>
+                          この年分は対象外(個人は2026年分まで)
+                        </td>
+                      ) : (
+                        <>
+                          <td className="tabular px-2 py-2 text-right">{yen(summary.salesTax)}</td>
+                          <td className="tabular px-2 py-2 text-right">{yen(row.deduction)}</td>
+                          <td className="tabular px-2 py-2 text-right font-semibold">
+                            {row.pay < 0 ? `還付 ${yen(-row.pay)}` : yen(row.pay)}
+                          </td>
+                        </>
                       )}
-                    </td>
-                    <td className="tabular px-2 py-2 text-right">{yen(summary.salesTax)}</td>
-                    <td className="tabular px-2 py-2 text-right">{yen(row.deduction)}</td>
-                    <td className="tabular px-2 py-2 text-right font-semibold">
-                      {row.pay < 0 ? `還付 ${yen(-row.pay)}` : yen(row.pay)}
-                    </td>
-                  </tr>
-                ))}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

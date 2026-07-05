@@ -67,7 +67,7 @@ export default function AnbunPage() {
   };
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   const existingForAccount = store.anbunSettings.find((s) => s.account === account);
@@ -83,10 +83,11 @@ export default function AnbunPage() {
         <Card title="按分ルールを登録(科目ごとに1件)">
           <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="anbun-account" className="mb-1 block text-xs font-medium text-slate-500">
                 対象の勘定科目
               </label>
               <select
+                id="anbun-account"
                 className={selectCls}
                 value={account}
                 onChange={(e) => setAccount(e.target.value)}
@@ -122,11 +123,12 @@ export default function AnbunPage() {
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="anbun-value" className="mb-1 block text-xs font-medium text-slate-500">
                 {type === 'percent' ? '事業割合(%)' : '毎月の経費計上額(円)'}
               </label>
               <div className="flex items-center gap-1">
                 <input
+                  id="anbun-value"
                   type="number"
                   className={`${input} w-32`}
                   min={1}
@@ -142,10 +144,11 @@ export default function AnbunPage() {
               </div>
             </div>
             <div className="min-w-56 flex-1">
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="anbun-memo" className="mb-1 block text-xs font-medium text-slate-500">
                 根拠メモ(任意・税務調査で説明できるように)
               </label>
               <input
+                id="anbun-memo"
                 type="text"
                 className={`${input} w-full`}
                 maxLength={100}
@@ -184,6 +187,7 @@ export default function AnbunPage() {
           action={
             <div className="flex items-center gap-2">
               <select
+                aria-label="試算する年"
                 className={selectCls}
                 value={year}
                 onChange={(e) => setYear(Number(e.target.value))}
@@ -282,7 +286,7 @@ export default function AnbunPage() {
               </table>
             </div>
           )}
-          <p className="mt-3 text-xs text-slate-400">
+          <p className="mt-3 text-xs text-slate-500">
             ※按分は取引の取込・編集・設定変更のたびに自動で全取引へ再適用されます(按分適用済みフラグ付き)。
             試算列は選択した年の仕訳済み取引が対象です。
           </p>

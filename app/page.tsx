@@ -58,7 +58,7 @@ export default function DashboardPage() {
   }, [store.invoices, store.transactions]);
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   const hasData = store.transactions.length > 0;
@@ -114,6 +114,7 @@ export default function DashboardPage() {
         type="file"
         accept=".json,application/json"
         className="hidden"
+        aria-label="バックアップファイルを選択"
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) void onRestoreFile(f);
@@ -301,7 +302,7 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             </div>
-            <p className="mt-2 text-xs text-slate-400">
+            <p className="mt-2 text-xs text-slate-500">
               ※減価償却費・棚卸調整などの決算整理は12月分の経費に含めています。
             </p>
           </Card>
@@ -332,7 +333,7 @@ export default function DashboardPage() {
             }
           >
             {summary.expenseLines.length === 0 ? (
-              <p className="text-sm text-slate-400">この年の経費データはまだありません。</p>
+              <p className="text-sm text-slate-500">この年の経費データはまだありません。</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] text-sm">
@@ -487,7 +488,7 @@ export default function DashboardPage() {
                 </button>
               </p>
             )}
-            <p className="mt-3 text-xs leading-relaxed text-slate-400">
+            <p className="mt-3 text-xs leading-relaxed text-slate-500">
               ※データはこの端末のブラウザ内(localStorage)にのみ保存されています。ブラウザのデータ消去や
               端末の故障で帳簿が失われるため、<strong className="text-slate-500">定期的にバックアップをダウンロード</strong>
               して保管してください(帳簿・書類は原則7年の保存義務があります)。

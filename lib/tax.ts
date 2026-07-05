@@ -1,5 +1,6 @@
 import { isExcluded, isSettlement } from './accounts';
 import { transactionsOfYear } from './aggregate';
+import { INVOICE_TRANSITION_AFTER, INVOICE_TRANSITION_STEPS, SPECIAL20 } from './taxparams';
 import { TaxCategory, TaxSettings, Transaction } from './types';
 
 /**
@@ -68,13 +69,13 @@ export const SIMPLIFIED_TYPES: { value: 1 | 2 | 3 | 4 | 5 | 6; label: string }[]
 
 /**
  * 適格請求書(インボイス)なしの課税仕入に対する控除割合(経過措置)。
- * 2023/10〜2026/9: 80% → 2026/10〜2029/9: 50% → 以降: 0%
+ * 2023/10〜2026/9: 80% → 2026/10〜2029/9: 50% → 以降: 0%(表は lib/taxparams.ts)
  */
 export function nonQualifiedDeductionRate(date: string): number {
-  if (date < '2023-10-01') return 100; // 制度開始前(区分記載請求書で全額控除)
-  if (date < '2026-10-01') return 80;
-  if (date < '2029-10-01') return 50;
-  return 0;
+  for (const step of INVOICE_TRANSITION_STEPS) {
+    if (date < step.before) return step.rate;
+  }
+  return INVOICE_TRANSITION_AFTER;
 }
 
 export interface TaxSummary {
@@ -100,7 +101,9 @@ export interface TaxSummary {
   payGeneral: number;
   paySimplified: number;
   paySpecial20: number;
-  /** 設定された方式での納付見込額 */
+  /** 2割特例をこの年分に適用できるか(個人事業者は2023〜2026年分のみ) */
+  special20Available: boolean;
+  /** 設定された方式での納付見込額(2割特例が期限切れの年分は本則課税で計算) */
   paySelected: number;
 }
 
@@ -160,12 +163,16 @@ export function summarizeTax(
   const paySimplified =
     salesTax - Math.floor((salesTax * DEEMED_PURCHASE_RATES[settings.simplifiedType]) / 100);
   const paySpecial20 = Math.floor((salesTax * 20) / 100);
+  const special20Available = year >= SPECIAL20.firstYear && year <= SPECIAL20.lastYear;
   const paySelected =
     settings.method === 'general'
       ? payGeneral
       : settings.method === 'simplified'
         ? paySimplified
-        : paySpecial20;
+        : // 2割特例は期限のある措置。期限外の年分は本則課税(誤った少額表示を防ぐ)
+          special20Available
+          ? paySpecial20
+          : payGeneral;
 
   return {
     year,
@@ -182,6 +189,7 @@ export function summarizeTax(
     payGeneral,
     paySimplified,
     paySpecial20,
+    special20Available,
     paySelected,
   };
 }

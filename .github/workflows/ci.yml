@@ -9,6 +9,14 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # '' = ルート配信、/kakuteishinkoku = GitHub Pages と同じサブパス配信。
+        # 実際に公開されるのは basePath 付きビルドなので、E2E は両方の構成で検証する
+        base_path: ['', '/kakuteishinkoku']
+    env:
+      NEXT_PUBLIC_BASE_PATH: ${{ matrix.base_path }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,9 +24,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
+      # lint・型・ユニットテストはビルド構成に依存しないため、ルート配信側でのみ実行
+      - if: matrix.base_path == ''
+        run: npm run lint
+      - if: matrix.base_path == ''
+        run: npm run typecheck
+      - if: matrix.base_path == ''
+        run: npm test
       - run: npm run build
       # E2E: 本番ビルドを配信して主要動線をブラウザで検証
       - run: npx playwright install --with-deps chromium

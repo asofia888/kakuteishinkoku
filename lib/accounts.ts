@@ -13,6 +13,7 @@ export const FUNDS: { id: FundId; label: string; short: string }[] = [
   { id: 'card', label: 'クレジットカード(未払金)', short: 'カード' },
   { id: 'receivable', label: '売掛金(請求時の発生記録)', short: '売掛' },
   { id: 'payable', label: '買掛金・未払金(発生記録)', short: '買掛' },
+  { id: 'deposit', label: '預り金(源泉所得税などの天引き)', short: '預り金' },
   { id: 'owner', label: '事業主のプライベート資金', short: '私費' },
 ];
 
@@ -31,7 +32,7 @@ export function fundsOf(type: TxType): { id: FundId; label: string; short: strin
   const ids: FundId[] =
     type === 'income'
       ? ['bank', 'cash', 'receivable', 'owner']
-      : ['bank', 'cash', 'card', 'payable', 'owner'];
+      : ['bank', 'cash', 'card', 'payable', 'deposit', 'owner'];
   return ids.map((id) => fundById.get(id)!);
 }
 
@@ -79,6 +80,8 @@ export const SETTLEMENT_ACCOUNTS: Account[] = [
   { id: 'asset_purchase', label: '固定資産の取得(振替)', type: 'expense' },
   // ATMでの引き出し・預け入れなど、資金の間の移動(損益に影響しない)
   { id: 'fund_transfer', label: '資金移動(預金⇔現金)', type: 'expense' },
+  // 給与から天引きした源泉所得税・社会保険料などを納めたとき
+  { id: 'deposit_payment', label: '預り金の納付(源泉所得税・社会保険料)', type: 'expense' },
 ];
 
 const settlementById = new Map(SETTLEMENT_ACCOUNTS.map((a) => [a.id, a]));

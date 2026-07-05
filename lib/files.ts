@@ -45,14 +45,25 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
-/** 取引にファイルを添付する(1ファイル最大10MB) */
-export async function addFiles(txId: string, files: File[]): Promise<number> {
+/** 1ファイルあたりの保存上限(これ以上は保存せず、呼び出し側でユーザーに知らせる) */
+export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+export interface AddFilesResult {
+  /** 保存した件数 */
+  added: number;
+  /** サイズ超過で保存しなかったファイル名(呼び出し側で必ずユーザーに表示すること) */
+  skipped: string[];
+}
+
+/** 取引にファイルを添付する(1ファイル最大10MB。超過分は保存せず skipped で返す) */
+export async function addFiles(txId: string, files: File[]): Promise<AddFilesResult> {
+  const skipped = files.filter((f) => f.size > MAX_FILE_SIZE).map((f) => f.name);
+  const accepted = files.filter((f) => f.size <= MAX_FILE_SIZE);
+  if (accepted.length === 0) return { added: 0, skipped };
   const db = await openDb();
   const tx = db.transaction(STORE, 'readwrite');
   const store = tx.objectStore(STORE);
-  let added = 0;
-  for (const f of files) {
-    if (f.size > 10 * 1024 * 1024) continue;
+  for (const f of accepted) {
     store.put({
       id: uid(),
       txId,
@@ -62,14 +73,13 @@ export async function addFiles(txId: string, files: File[]): Promise<number> {
       createdAt: Date.now(),
       blob: f,
     } satisfies StoredFile);
-    added++;
   }
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
   db.close();
-  return added;
+  return { added: accepted.length, skipped };
 }
 
 /** 取引に紐づく証憑の一覧 */

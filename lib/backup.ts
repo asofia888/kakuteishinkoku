@@ -11,6 +11,8 @@ import {
   InventoryCount,
   IssuerProfile,
   OpeningBalance,
+  Partner,
+  PayrollEntry,
   Rule,
   TaxCategory,
   TaxSettings,
@@ -26,7 +28,7 @@ import {
 const APP_TAG = 'shinkoku-snap';
 const BACKUP_VERSION = 6;
 
-const FUND_IDS: FundId[] = ['bank', 'cash', 'card', 'receivable', 'payable', 'owner'];
+const FUND_IDS: FundId[] = ['bank', 'cash', 'card', 'receivable', 'payable', 'deposit', 'owner'];
 const TAX_CATEGORIES: TaxCategory[] = ['taxable10', 'taxable8', 'exempt', 'none'];
 
 /** 全データをバックアップ用JSON文字列にする */
@@ -107,6 +109,16 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     const ded = sanitizeDeduction(item);
     if (ded) dedByYear.set(ded.year, ded);
   }
+  const payrollIds = new Set<string>();
+  const payrolls = (Array.isArray(obj.payrolls) ? obj.payrolls : [])
+    .map((x) => sanitizePayroll(x, payrollIds))
+    .filter((x): x is PayrollEntry => x !== null);
+  // 取引先は名前で重複排除(後勝ち)
+  const partnerByName = new Map<string, Partner>();
+  for (const item of Array.isArray(obj.partners) ? obj.partners : []) {
+    const p = sanitizePartner(item);
+    if (p) partnerByName.set(p.name, p);
+  }
   return {
     transactions,
     rules,
@@ -118,6 +130,8 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     assets,
     inventories: [...invByYear.values()].sort((a, b) => a.year - b.year),
     deductions: [...dedByYear.values()].sort((a, b) => a.year - b.year),
+    partners: [...partnerByName.values()].sort((a, b) => a.createdAt - b.createdAt),
+    payrolls,
   };
 }
 
@@ -180,6 +194,7 @@ function sanitizeOpeningBalance(raw: unknown): OpeningBalance | null {
     receivable: amount(o.receivable),
     card: amount(o.card),
     payable: amount(o.payable),
+    deposit: amount(o.deposit),
   };
 }
 
@@ -283,6 +298,57 @@ function sanitizeFixedAsset(raw: unknown, seenIds: Set<string>): FixedAsset | nu
     ...(deferredDep.length > 0 ? { deferredDep } : {}),
     createdAt:
       typeof a.createdAt === 'number' && Number.isFinite(a.createdAt) ? a.createdAt : Date.now(),
+  };
+}
+
+function sanitizePayroll(raw: unknown, seenIds: Set<string>): PayrollEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Partial<PayrollEntry>;
+  if (typeof p.employee !== 'string' || p.employee.trim() === '') return null;
+  if (typeof p.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) return null;
+  if (typeof p.gross !== 'number' || !Number.isFinite(p.gross) || p.gross <= 0) return null;
+  let id = typeof p.id === 'string' && p.id !== '' ? p.id : uid();
+  if (seenIds.has(id)) id = uid();
+  seenIds.add(id);
+  const withholding =
+    typeof p.withholding === 'number' && Number.isFinite(p.withholding) && p.withholding > 0
+      ? Math.min(Math.round(p.withholding), Math.round(p.gross))
+      : 0;
+  // 社会保険料等の天引きは「総支給 − 源泉」を超えない範囲で保持する
+  const socialInsurance =
+    typeof p.socialInsurance === 'number' && Number.isFinite(p.socialInsurance) && p.socialInsurance > 0
+      ? Math.min(Math.round(p.socialInsurance), Math.round(p.gross) - withholding)
+      : 0;
+  const linked = Array.isArray(p.linkedTxIds)
+    ? p.linkedTxIds.filter((x): x is string => typeof x === 'string')
+    : [];
+  const note = typeof p.note === 'string' ? p.note.trim() : '';
+  return {
+    id,
+    employee: p.employee.trim(),
+    date: p.date,
+    gross: Math.round(p.gross),
+    withholding,
+    ...(socialInsurance > 0 ? { socialInsurance } : {}),
+    table: p.table === 'kou' || p.table === 'otsu' || p.table === 'hei' ? p.table : 'manual',
+    ...(note ? { note } : {}),
+    ...(linked.length > 0 ? { linkedTxIds: linked } : {}),
+    createdAt:
+      typeof p.createdAt === 'number' && Number.isFinite(p.createdAt) ? p.createdAt : Date.now(),
+  };
+}
+
+function sanitizePartner(raw: unknown): Partner | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Partial<Partner>;
+  if (typeof p.name !== 'string' || p.name.trim() === '') return null;
+  return {
+    id: typeof p.id === 'string' && p.id !== '' ? p.id : uid(),
+    name: p.name.trim(),
+    invoiceRegNumber: str(p.invoiceRegNumber),
+    memo: str(p.memo),
+    createdAt:
+      typeof p.createdAt === 'number' && Number.isFinite(p.createdAt) ? p.createdAt : Date.now(),
   };
 }
 

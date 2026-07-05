@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
+import { Alert, btn, Card, EmptyState, input, ModalShell, PageHeader, selectCls } from '@/components/ui';
 import {
   accountLabel,
   accountsOf,
@@ -254,7 +254,7 @@ export default function TransactionsPage() {
   };
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -269,10 +269,11 @@ export default function TransactionsPage() {
         <Card title="CSV明細の取り込み">
           <div className="flex flex-wrap items-end gap-4">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="tx-import-mode" className="mb-1 block text-xs font-medium text-slate-500">
                 明細の種類(収入/支出の判定)
               </label>
               <select
+                id="tx-import-mode"
                 className={selectCls}
                 value={mode}
                 onChange={(e) => changeMode(e.target.value as ImportMode)}
@@ -283,15 +284,16 @@ export default function TransactionsPage() {
                   </option>
                 ))}
               </select>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-slate-500">
                 {IMPORT_MODES.find((m) => m.id === mode)?.hint}
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="tx-import-fund" className="mb-1 block text-xs font-medium text-slate-500">
                 決済手段(複式仕訳の相手勘定)
               </label>
               <select
+                id="tx-import-fund"
                 className={selectCls}
                 value={importFund}
                 onChange={(e) => setImportFund(e.target.value as FundId)}
@@ -302,15 +304,16 @@ export default function TransactionsPage() {
                   </option>
                 ))}
               </select>
-              <p className="mt-1 max-w-56 text-xs text-slate-400">
+              <p className="mt-1 max-w-56 text-xs text-slate-500">
                 カード明細は「クレジットカード(未払金)」のまま取り込むと、購入時に経費・引落し時に未払金の決済として二重計上なく記帳されます。
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="tx-csv-file" className="mb-1 block text-xs font-medium text-slate-500">
                 CSVファイル(Shift_JIS / UTF-8 自動判定)
               </label>
               <input
+                id="tx-csv-file"
                 ref={fileRef}
                 type="file"
                 accept=".csv,text/csv"
@@ -391,6 +394,7 @@ export default function TransactionsPage() {
                         <td className="px-3 py-1.5">
                           <input
                             type="checkbox"
+                            aria-label={`${r.description} を取込対象にする`}
                             checked={r.include}
                             onChange={(e) => updatePreviewRow(i, { include: e.target.checked })}
                           />
@@ -417,6 +421,7 @@ export default function TransactionsPage() {
                         </td>
                         <td className="px-3 py-1.5">
                           <select
+                            aria-label={`${r.description} の種別`}
                             className={selectCls}
                             value={r.type}
                             onChange={(e) => updatePreviewRow(i, { type: e.target.value as TxType })}
@@ -429,6 +434,7 @@ export default function TransactionsPage() {
                           <AccountSelect
                             type={r.type}
                             value={r.account}
+                            aria-label={`${r.description} の勘定科目`}
                             onChange={(v) => updatePreviewRow(i, { account: v })}
                           />
                           <DepreciationHint account={r.account} amount={r.amount} type={r.type} />
@@ -514,6 +520,7 @@ export default function TransactionsPage() {
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <select
+              aria-label="年で絞り込み"
               className={selectCls}
               value={yearFilter}
               onChange={(e) => setYearFilter(e.target.value)}
@@ -526,6 +533,7 @@ export default function TransactionsPage() {
               ))}
             </select>
             <select
+              aria-label="月で絞り込み"
               className={selectCls}
               value={monthFilter}
               onChange={(e) => setMonthFilter(e.target.value)}
@@ -541,6 +549,7 @@ export default function TransactionsPage() {
               })}
             </select>
             <select
+              aria-label="収支で絞り込み"
               className={selectCls}
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value as 'all' | TxType)}
@@ -550,6 +559,7 @@ export default function TransactionsPage() {
               <option value="expense">支出のみ</option>
             </select>
             <select
+              aria-label="状態で絞り込み"
               className={selectCls}
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
@@ -562,6 +572,7 @@ export default function TransactionsPage() {
             </select>
             <input
               type="search"
+              aria-label="摘要で検索"
               className={`${input} flex-1 min-w-40`}
               placeholder="摘要で検索…"
               value={q}
@@ -636,13 +647,19 @@ function AccountSelect({
   type,
   value,
   onChange,
+  id,
+  'aria-label': ariaLabel,
 }: {
   type: TxType;
   value: string | null;
   onChange: (v: string | null) => void;
+  id?: string;
+  'aria-label'?: string;
 }) {
   return (
     <select
+      id={id}
+      aria-label={ariaLabel}
       className={`${selectCls} ${value === null ? 'border-amber-400 bg-amber-50' : ''}`}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
@@ -676,6 +693,7 @@ function FundSelect({ t }: { t: Transaction }) {
   const known = options.some((f) => f.id === t.fund);
   return (
     <select
+      aria-label={`${t.description} の決済手段`}
       className={selectCls}
       value={t.fund}
       title="この取引で動いた資金(複式仕訳の相手勘定)"
@@ -702,6 +720,7 @@ function CounterFundControl({ t }: { t: Transaction }) {
     <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
       <span>{t.type === 'expense' ? '移動先:' : '移動元:'}</span>
       <select
+        aria-label={`${t.description} の${t.type === 'expense' ? '移動先' : '移動元'}`}
         className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600"
         value={counter}
         onChange={(e) => store.updateTransaction(t.id, { counterFund: e.target.value as FundId })}
@@ -726,6 +745,7 @@ function TaxControls({ t }: { t: Transaction }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-2">
       <select
+        aria-label={`${t.description} の税区分`}
         className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600"
         value={cat}
         title="消費税の税区分(科目から自動判定。住宅家賃の按分など必要に応じて変更)"
@@ -824,6 +844,7 @@ function TxRow({
         <AccountSelect
           type={t.type}
           value={t.account}
+          aria-label={`${t.description} の勘定科目`}
           onChange={(v) => store.updateTransaction(t.id, { account: v, approved: false })}
         />
         <DepreciationHint account={t.account} amount={t.amount} type={t.type} />
@@ -908,12 +929,22 @@ function TxRow({
 function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void }) {
   const [files, setFiles] = useState<StoredFile[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // 保存の失敗・スキップは必ず表示する(「添付したつもりが保存されていない」を防ぐ)
+  const [notice, setNotice] = useState<{ tone: 'error' | 'warning'; text: string } | null>(null);
 
   useEffect(() => {
-    void listFiles(t.id).then(setFiles);
+    void listFiles(t.id)
+      .then(setFiles)
+      .catch(() => {
+        setFiles([]);
+        setNotice({
+          tone: 'error',
+          text: '証憑を読み込めませんでした(プライベートブラウズ等ではファイル保存を利用できない場合があります)。',
+        });
+      });
   }, [t.id]);
 
-  const reload = () => void listFiles(t.id).then(setFiles);
+  const reload = () => void listFiles(t.id).then(setFiles).catch(() => setFiles([]));
 
   const openFile = (f: StoredFile) => {
     const url = URL.createObjectURL(f.blob);
@@ -933,11 +964,12 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-auto bg-slate-900/60 p-4 md:p-10" onClick={onClose}>
-      <div
-        className="mx-auto max-w-xl rounded-xl bg-white p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalShell
+      label="証憑の添付"
+      onClose={onClose}
+      overlayClassName="p-4 md:p-10"
+      className="mx-auto max-w-xl rounded-xl bg-white p-6 shadow-xl"
+    >
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-slate-800">証憑の添付</h2>
@@ -951,9 +983,9 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
         </div>
 
         {files === null ? (
-          <p className="py-6 text-center text-sm text-slate-400">読み込み中…</p>
+          <p className="py-6 text-center text-sm text-slate-500">読み込み中…</p>
         ) : files.length === 0 ? (
-          <p className="py-6 text-center text-sm text-slate-400">
+          <p className="py-6 text-center text-sm text-slate-500">
             まだ証憑がありません。領収書の写真や請求書PDFを追加してください。
           </p>
         ) : (
@@ -971,7 +1003,7 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
                       {f.name}
                     </button>
                   </td>
-                  <td className="tabular px-2 py-1.5 text-right text-xs text-slate-400 whitespace-nowrap">
+                  <td className="tabular px-2 py-1.5 text-right text-xs text-slate-500 whitespace-nowrap">
                     {formatBytes(f.size)}
                   </td>
                   <td className="py-1.5 pl-2 text-right">
@@ -994,10 +1026,11 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
         )}
 
         <div className="mt-4">
-          <label className="mb-1 block text-xs font-medium text-slate-500">
+          <label htmlFor="tx-attach-file" className="mb-1 block text-xs font-medium text-slate-500">
             ファイルを追加(画像・PDF、1ファイル10MBまで)
           </label>
           <input
+            id="tx-attach-file"
             type="file"
             multiple
             accept="image/*,.pdf"
@@ -1007,21 +1040,47 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
               const list = Array.from(e.target.files ?? []);
               if (list.length === 0) return;
               setBusy(true);
-              await addFiles(t.id, list);
-              setBusy(false);
-              e.target.value = '';
-              reload();
+              setNotice(null);
+              try {
+                const result = await addFiles(t.id, list);
+                if (result.skipped.length > 0) {
+                  setNotice({
+                    tone: 'warning',
+                    text: `10MBを超えるため保存しませんでした: ${result.skipped.join('、')}(縮小・分割してから追加してください)`,
+                  });
+                }
+                reload();
+              } catch {
+                setNotice({
+                  tone: 'error',
+                  text: '証憑を保存できませんでした(ブラウザの保存容量不足やプライベートブラウズの可能性があります)。元ファイルを別途保管してください。',
+                });
+              } finally {
+                setBusy(false);
+                e.target.value = '';
+              }
             }}
           />
+          {notice && (
+            <p
+              role="alert"
+              className={`mt-2 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                notice.tone === 'error'
+                  ? 'border-rose-200 bg-rose-50 text-rose-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              ⚠ {notice.text}
+            </p>
+          )}
         </div>
 
-        <p className="mt-4 text-[11px] leading-relaxed text-slate-400">
+        <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
           証憑はこの端末のブラウザ(IndexedDB)にのみ保存され、<strong>バックアップJSONには含まれません</strong>。
           電子帳簿保存法の検索(日付・金額・取引先)は取引一覧の検索・絞り込みで行えます。
           電子取引の原本データは、訂正削除防止の事務処理規程を整えた上で元ファイルも別途保管しておくと安全です。
         </p>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1064,8 +1123,9 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
       className="mb-5 flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4"
     >
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-500">日付</label>
+        <label htmlFor="tx-manual-date" className="mb-1 block text-xs font-medium text-slate-500">日付</label>
         <input
+          id="tx-manual-date"
           type="date"
           className={input}
           value={date}
@@ -1074,8 +1134,9 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-500">種別</label>
+        <label htmlFor="tx-manual-type" className="mb-1 block text-xs font-medium text-slate-500">種別</label>
         <select
+          id="tx-manual-type"
           className={selectCls}
           value={type}
           onChange={(e) => {
@@ -1089,8 +1150,9 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
         </select>
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-500">決済手段</label>
+        <label htmlFor="tx-manual-fund" className="mb-1 block text-xs font-medium text-slate-500">決済手段</label>
         <select
+          id="tx-manual-fund"
           className={selectCls}
           value={fund}
           onChange={(e) => setFund(e.target.value as FundId)}
@@ -1102,14 +1164,15 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
           ))}
         </select>
         {fund === 'receivable' && (
-          <p className="mt-1 max-w-52 text-[11px] leading-relaxed text-slate-400">
+          <p className="mt-1 max-w-52 text-[11px] leading-relaxed text-slate-500">
             請求時の売上計上(発生主義)。後日の入金行は科目を「売掛金の回収」にしてください。
           </p>
         )}
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-500">金額(円)</label>
+        <label htmlFor="tx-manual-amount" className="mb-1 block text-xs font-medium text-slate-500">金額(円)</label>
         <input
+          id="tx-manual-amount"
           type="number"
           className={`${input} w-32`}
           min={1}
@@ -1119,8 +1182,9 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
         />
       </div>
       <div className="min-w-52 flex-1">
-        <label className="mb-1 block text-xs font-medium text-slate-500">摘要</label>
+        <label htmlFor="tx-manual-description" className="mb-1 block text-xs font-medium text-slate-500">摘要</label>
         <input
+          id="tx-manual-description"
           type="text"
           className={`${input} w-full`}
           placeholder="例: ○○文具店 コピー用紙"
@@ -1129,10 +1193,10 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
         />
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-500">
+        <label htmlFor="tx-manual-account" className="mb-1 block text-xs font-medium text-slate-500">
           勘定科目(未選択なら自動仕訳)
         </label>
-        <AccountSelect type={type} value={account} onChange={setAccount} />
+        <AccountSelect id="tx-manual-account" type={type} value={account} onChange={setAccount} />
       </div>
       <button type="submit" className={btn.primary}>
         追加

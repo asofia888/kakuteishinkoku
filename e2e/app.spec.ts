@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('サンプルデータで全ページの主要機能が動く', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('./');
   await page.getByRole('button', { name: 'サンプルデータを読み込む' }).first().click();
 
   // ダッシュボード: 集計・月次推移・未回収アラート
@@ -55,7 +55,7 @@ test('サンプルデータで全ページの主要機能が動く', async ({ pa
 });
 
 test('データはリロード後も保持される(localStorage永続化)', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('./');
   await page.getByRole('button', { name: 'サンプルデータを読み込む' }).first().click();
   await expect(page.getByText('売上(収入)金額 年間合計').first()).toBeVisible();
 

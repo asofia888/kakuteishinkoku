@@ -39,7 +39,7 @@ export default function RulesPage() {
   };
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -53,10 +53,11 @@ export default function RulesPage() {
         <Card title="ルールを追加">
           <form onSubmit={addRule} className="flex flex-wrap items-end gap-3">
             <div className="min-w-52 flex-1">
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="rule-keyword" className="mb-1 block text-xs font-medium text-slate-500">
                 キーワード(摘要に含まれる文字。大文字小文字・全角半角・半角カナは区別しません)
               </label>
               <input
+                id="rule-keyword"
                 type="text"
                 className={`${input} w-full`}
                 placeholder="例: Amazon / 電力 / 家賃"
@@ -65,10 +66,11 @@ export default function RulesPage() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-500">
+              <label htmlFor="rule-account" className="mb-1 block text-xs font-medium text-slate-500">
                 割り当てる勘定科目
               </label>
               <select
+                id="rule-account"
                 className={selectCls}
                 value={account}
                 onChange={(e) => setAccount(e.target.value)}
@@ -111,12 +113,14 @@ export default function RulesPage() {
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="text"
+                aria-label="お試し判定の摘要"
                 className={`${input} min-w-60 flex-1`}
                 placeholder="例: AMAZON.CO.JP カイモノ"
                 value={testText}
                 onChange={(e) => setTestText(e.target.value)}
               />
               <select
+                aria-label="お試し判定の取引種別"
                 className={selectCls}
                 value={testType}
                 onChange={(e) => setTestType(e.target.value as TxType)}
@@ -130,7 +134,7 @@ export default function RulesPage() {
                     <>
                       →{' '}
                       <strong className="text-blue-700">{accountLabel(testResult.account)}</strong>
-                      <span className="ml-1 text-xs text-slate-400">
+                      <span className="ml-1 text-xs text-slate-500">
                         (キーワード「{testResult.keyword}」に一致)
                       </span>
                     </>
@@ -183,7 +187,7 @@ export default function RulesPage() {
                     <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/60">
                       <td className="py-1.5 pr-2">
                         <div className="flex items-center gap-1">
-                          <span className="tabular w-6 text-right text-xs text-slate-400">
+                          <span className="tabular w-6 text-right text-xs text-slate-500">
                             {i + 1}
                           </span>
                           <button
@@ -209,6 +213,7 @@ export default function RulesPage() {
                       <td className="px-2 py-1.5">
                         <input
                           type="text"
+                          aria-label={`ルール「${r.keyword}」のキーワード`}
                           className={`${input} w-full max-w-64 !py-1`}
                           defaultValue={r.keyword}
                           onBlur={(e) => {
@@ -220,6 +225,7 @@ export default function RulesPage() {
                       </td>
                       <td className="px-2 py-1.5">
                         <select
+                          aria-label={`ルール「${r.keyword}」の勘定科目`}
                           className={selectCls}
                           value={r.account}
                           onChange={(e) => store.updateRule(r.id, { account: e.target.value })}

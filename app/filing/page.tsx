@@ -18,7 +18,7 @@ function Row({ label, value, note, strong }: { label: string; value: number | nu
       <td className="tabular px-2 py-1.5 text-right whitespace-nowrap">
         {value === null ? <span className="text-slate-300">—</span> : value.toLocaleString()}
       </td>
-      <td className="py-1.5 pl-2 text-xs text-slate-400">{note ?? ''}</td>
+      <td className="py-1.5 pl-2 text-xs text-slate-500">{note ?? ''}</td>
     </tr>
   );
 }
@@ -108,7 +108,7 @@ export default function FilingPage() {
   const unclassified = summary.unclassifiedCount + summary.unapprovedCount;
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -119,7 +119,7 @@ export default function FilingPage() {
       />
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-3">
-          <select className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          <select aria-label="対象年度" className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
             {years.map((y) => (
               <option key={y} value={y}>
                 {y}年分
@@ -209,7 +209,7 @@ export default function FilingPage() {
               </tbody>
             </table>
           </div>
-          <p className="mt-2 text-xs text-slate-400">
+          <p className="mt-2 text-xs text-slate-500">
             ※家事按分している経費(地代家賃・水道光熱費など)の割合は、決算書2〜3ページの各欄の按分記載に
             <Link href="/anbun" className="mx-1 text-blue-700 underline">
               家事按分設定

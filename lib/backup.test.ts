@@ -17,11 +17,27 @@ const goodTx: Transaction = {
   fund: 'bank',
 };
 
+/** 給与機能が起票する源泉預りの取引(貸方が預り金になる) */
+const depositTx: Transaction = {
+  id: 'tx-dep-1',
+  date: '2026-01-31',
+  amount: 10210,
+  description: '給与 佐藤(1月分) 源泉所得税(預り)',
+  type: 'expense',
+  account: 'salaries',
+  approved: true,
+  anbunApplied: false,
+  businessAmount: 10210,
+  source: 'manual',
+  createdAt: 1100,
+  fund: 'deposit',
+};
+
 const goodData: AppData = {
-  transactions: [goodTx],
+  transactions: [goodTx, depositTx],
   rules: [{ id: 'r1', keyword: 'amazon', account: 'supplies' }],
   anbunSettings: [{ id: 's1', account: 'rent', type: 'fixed', value: 30000 }],
-  openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0 }],
+  openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 }],
   taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
   invoices: [
     {
@@ -54,6 +70,10 @@ const goodData: AppData = {
   ],
   inventories: [{ year: 2026, amount: 120000 }],
   deductions: [],
+  payrolls: [],
+  partners: [
+    { id: 'p1', name: '株式会社ABC', invoiceRegNumber: 'T9999999999999', memo: '', createdAt: 4000 },
+  ],
 };
 
 describe('バックアップの往復(エクスポート → インポート)', () => {
@@ -148,6 +168,29 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
     expect(data.transactions[2].fund).toBe('bank');
   });
 
+  it('源泉預り(fund: deposit)の取引は補正されず保持される(回帰: 預り金が普通預金に化ける)', () => {
+    // 給与機能が起票する「(借)給料賃金 / (貸)預り金」の取引。
+    // FUND_IDS に deposit が漏れていると、リロードのたびに fund が bank へ書き換わり
+    // 預金残高・預り金残高の両方が狂う(貸借は一致したままなので検算では気づけない)。
+    const data = sanitizeAppData({
+      transactions: [
+        {
+          ...goodTx,
+          id: 'tx-dep',
+          type: 'expense',
+          account: 'salaries',
+          description: '給与 山田(1月分) 源泉所得税(預り)',
+          fund: 'deposit',
+        },
+        { ...goodTx, id: 'tx-cf', counterFund: 'deposit' },
+      ],
+      rules: [],
+      anbunSettings: [],
+    })!;
+    expect(data.transactions[0].fund).toBe('deposit');
+    expect(data.transactions[1].counterFund).toBe('deposit');
+  });
+
   it('taxCategory と qualifiedInvoice を保持し、不正値は捨てる', () => {
     const data = sanitizeAppData({
       transactions: [
@@ -183,6 +226,7 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
       receivable: 0,
       card: 0,
       payable: 0,
+      deposit: 0,
     });
     expect(data.taxSettings).toEqual({ ...DEFAULT_TAX_SETTINGS, taxable: true });
   });

@@ -13,6 +13,7 @@ import { applyAnbun } from './anbun';
 import { sanitizeAppData } from './backup';
 import { buildDemoData } from './demo';
 import { buildInvoiceTransactions } from './invoice';
+import { buildPayrollTransactions } from './payroll';
 import { applyRulesToTransactions, buildDefaultRules } from './rules';
 import {
   AnbunSetting,
@@ -25,6 +26,8 @@ import {
   InventoryCount,
   IssuerProfile,
   OpeningBalance,
+  Partner,
+  PayrollEntry,
   Rule,
   TaxSettings,
   Transaction,
@@ -32,12 +35,20 @@ import {
 } from './types';
 
 const STORAGE_KEY = 'shinkoku-snap:v2';
+/**
+ * 起動時に読み取れなかった保存データの退避先。
+ * 空の状態で起動した直後にユーザーが操作すると保存エフェクトが原本を上書きするため、
+ * 上書きされる前に生データをここへ写し、手動復旧の可能性を残す。
+ */
+export const BROKEN_STORAGE_KEY = `${STORAGE_KEY}:broken`;
 
 interface Store {
   /** localStorage の読込が完了したか(SSR/初回描画ではfalse) */
   ready: boolean;
   /** 直近の保存が失敗したか(容量超過など)。true の間は変更が永続化されていない */
   saveError: boolean;
+  /** 起動時に保存データを読み取れず、破損データを退避キーへ写して空で起動したか */
+  dataCorrupted: boolean;
   transactions: Transaction[];
   rules: Rule[];
   anbunSettings: AnbunSetting[];
@@ -48,6 +59,8 @@ interface Store {
   assets: FixedAsset[];
   inventories: InventoryCount[];
   deductions: DeductionEntry[];
+  partners: Partner[];
+  payrolls: PayrollEntry[];
 
   /** 取引を追加(取込・手入力)。按分は自動で再計算される */
   addTransactions: (
@@ -96,6 +109,19 @@ interface Store {
   /** 所得控除の入力を保存(年ごとに1件) */
   setDeduction: (entry: DeductionEntry) => void;
 
+  /**
+   * 給与を記帳する(賃金台帳への記録 + 手取り支払い・源泉預りの取引を自動起票)。
+   * 作成した取引数を返す。
+   */
+  registerPayroll: (entry: Omit<PayrollEntry, 'id' | 'createdAt' | 'linkedTxIds'>) => number;
+  /** 給与記録を削除(自動起票した取引も一緒に削除する) */
+  deletePayroll: (id: string) => void;
+
+  /** 取引先を登録(同名があれば何もしない)。請求書の保存時に自動で呼ばれる */
+  ensurePartner: (name: string) => void;
+  updatePartner: (id: string, patch: Partial<Partner>) => void;
+  deletePartner: (id: string) => void;
+
   loadDemoData: () => void;
   clearAll: () => void;
   /** バックアップ(JSON)からの復元。現在の全データを置き換える */
@@ -118,22 +144,41 @@ function emptyData(): AppData {
     assets: [],
     inventories: [],
     deductions: [],
+    partners: [],
+    payrolls: [],
   };
 }
 
-function loadData(): AppData {
+/** 解釈できなかった保存データを退避キーへ写す(原本が上書きで消える前に保全する) */
+function salvageBrokenData(raw: string | null) {
+  if (!raw) return;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return emptyData();
+    localStorage.setItem(BROKEN_STORAGE_KEY, raw);
+  } catch {
+    // 退避すら失敗する環境(容量不足等)でも起動は続ける。corrupted フラグで警告は出る
+  }
+}
+
+function loadData(): { data: AppData; corrupted: boolean } {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { data: emptyData(), corrupted: false };
     const parsed = JSON.parse(raw) as Partial<AppData>;
     // バックアップ復元と同じ検証を通し、壊れた要素が混ざっていても起動できるようにする
     const data = sanitizeAppData(parsed);
-    if (!data) return emptyData();
+    if (!data) {
+      salvageBrokenData(raw);
+      return { data: emptyData(), corrupted: true };
+    }
     // 保存データにルール配列が無い(破損している)場合のみ初期ルールを補う
     if (!Array.isArray(parsed.rules)) data.rules = buildDefaultRules();
-    return data;
+    return { data, corrupted: false };
   } catch {
-    return emptyData();
+    salvageBrokenData(raw);
+    // raw が取れた上での失敗(JSON破損)だけを「破損」として警告する。
+    // localStorage 自体に触れない環境(raw === null)は空起動のみで警告しない
+    return { data: emptyData(), corrupted: raw !== null };
   }
 }
 
@@ -141,15 +186,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [data, setData] = useState<AppData>(emptyData);
   const [ready, setReady] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [dataCorrupted, setDataCorrupted] = useState(false);
   const skipSave = useRef(true);
 
   // 初回マウント時にlocalStorageから読込(SSRと初回描画の不一致を避ける)
   useEffect(() => {
-    const loaded = loadData();
+    const { data: loaded, corrupted } = loadData();
     // 保存後に按分設定だけ変わっているケースに備えて読込時にも再計算
     loaded.transactions = applyAnbun(loaded.transactions, loaded.anbunSettings);
     skipSave.current = true;
     setData(loaded);
+    if (corrupted) setDataCorrupted(true);
     setReady(true);
   }, []);
 
@@ -202,6 +249,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return {
       ready,
       saveError,
+      dataCorrupted,
       transactions: data.transactions,
       rules: data.rules,
       anbunSettings: data.anbunSettings,
@@ -212,6 +260,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       assets: data.assets,
       inventories: data.inventories,
       deductions: data.deductions,
+      partners: data.partners,
+      payrolls: data.payrolls,
 
       addTransactions: (txs) =>
         mutate((prev) => ({
@@ -401,6 +451,65 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           ),
         })),
 
+      registerPayroll: (entry) => {
+        // StrictModeでupdaterが2回呼ばれても同じ結果になるよう、取引は先に確定させる
+        const txs = buildPayrollTransactions(entry).map((t, i) => ({
+          ...t,
+          id: uid(),
+          createdAt: Date.now() + i,
+          businessAmount: t.amount,
+          anbunApplied: false,
+        }));
+        const record: PayrollEntry = {
+          ...entry,
+          id: uid(),
+          createdAt: Date.now(),
+          ...(txs.length > 0 ? { linkedTxIds: txs.map((t) => t.id) } : {}),
+        };
+        mutate((prev) => ({
+          ...prev,
+          transactions: [...prev.transactions, ...txs],
+          payrolls: [...prev.payrolls, record],
+        }));
+        return txs.length;
+      },
+
+      deletePayroll: (id) =>
+        mutate((prev) => {
+          const target = prev.payrolls.find((p) => p.id === id);
+          const linked = new Set(target?.linkedTxIds ?? []);
+          return {
+            ...prev,
+            transactions: prev.transactions.filter((t) => !linked.has(t.id)),
+            payrolls: prev.payrolls.filter((p) => p.id !== id),
+          };
+        }),
+
+      ensurePartner: (name) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        mutate((prev) =>
+          prev.partners.some((p) => p.name === trimmed)
+            ? prev
+            : {
+                ...prev,
+                partners: [
+                  ...prev.partners,
+                  { id: uid(), name: trimmed, invoiceRegNumber: '', memo: '', createdAt: Date.now() },
+                ],
+              },
+        );
+      },
+
+      updatePartner: (id, patch) =>
+        mutate((prev) => ({
+          ...prev,
+          partners: prev.partners.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        })),
+
+      deletePartner: (id) =>
+        mutate((prev) => ({ ...prev, partners: prev.partners.filter((p) => p.id !== id) })),
+
       loadDemoData: () => {
         mutate(() => buildDemoData());
       },
@@ -416,7 +525,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       exportData: () => data,
     };
-  }, [data, mutate, ready, saveError]);
+  }, [data, mutate, ready, saveError, dataCorrupted]);
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }

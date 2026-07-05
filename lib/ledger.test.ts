@@ -121,7 +121,7 @@ describe('entryForTransaction: 仕訳の導出', () => {
 
 describe('buildBalanceSheet: 貸借対照表', () => {
   const year = 2026;
-  const opening = { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0 };
+  const opening = { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 };
   const txs: Transaction[] = [
     tx({ date: '2026-01-25', description: '報酬', type: 'income', account: 'sales', amount: 300000 }),
     tx({
@@ -178,7 +178,8 @@ describe('buildBalanceSheet: 貸借対照表', () => {
     expect(next.bank).toBe(1_077_000);
     expect(next.receivable).toBe(220_000);
     // 翌年の元入金(資産-負債)= nextCapital
-    const nextCapital = next.cash + next.bank + next.receivable - next.card - next.payable;
+    const nextCapital =
+      next.cash + next.bank + next.receivable - next.card - next.payable - next.deposit;
     expect(nextCapital).toBe(bs.nextCapital);
   });
 
@@ -223,7 +224,7 @@ describe('generalLedger: 総勘定元帳', () => {
 
 describe('固定資産・棚卸の帳簿統合', () => {
   const year = 2026;
-  const opening = { year, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0 };
+  const opening = { year, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 };
   const pc: FixedAsset = {
     id: 'a1',
     name: 'ノートPC',
@@ -311,7 +312,7 @@ describe('資金移動(fund_transfer)', () => {
     const bs = buildBalanceSheet(
       [tx({ date: '2026-04-05', description: 'ATM', type: 'expense', account: 'fund_transfer', fund: 'bank', counterFund: 'cash', amount: 30000 })],
       2026,
-      { year: 2026, cash: 0, bank: 100000, receivable: 0, card: 0, payable: 0 },
+      { year: 2026, cash: 0, bank: 100000, receivable: 0, card: 0, payable: 0, deposit: 0 },
     );
     const closing = (id: string) => bs.assets.find((r) => r.id === id)!.closing;
     expect(closing('bank')).toBe(70000);
@@ -338,7 +339,7 @@ describe('繰延資産(開業費)の帳簿統合', () => {
     const bs = buildBalanceSheet(
       [],
       2026,
-      { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0 },
+      { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 },
       [kaigyo],
       [],
     );
@@ -357,7 +358,7 @@ describe('繰延資産(開業費)の帳簿統合', () => {
     const bs = buildBalanceSheet(
       [],
       2027,
-      { year: 2027, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0 },
+      { year: 2027, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, deposit: 0 },
       [kaigyo],
       [],
     );

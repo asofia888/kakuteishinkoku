@@ -36,6 +36,7 @@ export type LedgerAccountId =
   | 'deferred_asset'
   | 'card'
   | 'payable'
+  | 'deposit'
   | 'owner_draw'
   | 'owner_invest';
 
@@ -48,13 +49,14 @@ export const LEDGER_LABELS: Record<LedgerAccountId, string> = {
   deferred_asset: '繰延資産(開業費等)',
   card: '未払金(クレジットカード)',
   payable: '買掛金・未払金',
+  deposit: '預り金(源泉所得税等)',
   owner_draw: '事業主貸',
   owner_invest: '事業主借',
 };
 
 /** 期首残高(OpeningBalance)から引き継ぐ資産勘定。棚卸・固定資産・繰延資産は台帳から自動算出 */
 const ASSET_IDS: LedgerAccountId[] = ['cash', 'bank', 'receivable'];
-const LIABILITY_IDS: LedgerAccountId[] = ['card', 'payable'];
+const LIABILITY_IDS: LedgerAccountId[] = ['card', 'payable', 'deposit'];
 const DEBIT_POSITIVE_IDS: string[] = [
   'cash',
   'bank',
@@ -136,6 +138,14 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
     return {
       ...base,
       debits: [{ account: 'fixed_asset', amount: t.amount }],
+      credits: [{ account: fundCr, amount: t.amount }],
+    };
+  }
+  if (t.account === 'deposit_payment') {
+    // 預り金(給与から天引きした源泉所得税など)の納付
+    return {
+      ...base,
+      debits: [{ account: 'deposit', amount: t.amount }],
       credits: [{ account: fundCr, amount: t.amount }],
     };
   }
@@ -303,7 +313,7 @@ export interface BalanceSheet {
 }
 
 export function emptyOpeningBalance(year: number): OpeningBalance {
-  return { year, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0 };
+  return { year, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, deposit: 0 };
 }
 
 /**
@@ -350,6 +360,7 @@ export function buildBalanceSheet(
     deferred_asset: deferred.reduce((s, a) => s + bookValueAtStart(a, year), 0),
     card: ob.card,
     payable: ob.payable,
+    deposit: ob.deposit,
     owner_draw: 0,
     owner_invest: 0,
   };
@@ -402,7 +413,8 @@ export function buildBalanceSheet(
     openOf.fixed_asset +
     openOf.deferred_asset -
     ob.card -
-    ob.payable;
+    ob.payable -
+    ob.deposit;
   const ownerInvest = c('owner_invest') - d('owner_invest');
   const equity: BalanceSheetRow[] = [
     { id: 'owner_invest', label: LEDGER_LABELS.owner_invest, opening: 0, closing: ownerInvest },
@@ -447,6 +459,7 @@ export function carryForwardOpening(prev: BalanceSheet): OpeningBalance {
     receivable: closingOf(prev.assets, 'receivable'),
     card: closingOf(prev.liabilities, 'card'),
     payable: closingOf(prev.liabilities, 'payable'),
+    deposit: closingOf(prev.liabilities, 'deposit'),
   };
 }
 

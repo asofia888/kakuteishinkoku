@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../out/', import.meta.url));
 const PORT = Number(process.env.PORT ?? 4173);
+// GitHub Pages のサブパス配信(/kakuteishinkoku)を再現する。
+// ビルド時と同じ NEXT_PUBLIC_BASE_PATH を設定すると、そのパス配下だけを out/ に対応させ、
+// 接頭辞のないURL(リンクの付け忘れ等)は本番同様に404になる。
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -25,6 +29,14 @@ const MIME = {
 const server = http.createServer(async (req, res) => {
   try {
     let pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    if (BASE_PATH) {
+      if (pathname === BASE_PATH) pathname = '/';
+      else if (pathname.startsWith(`${BASE_PATH}/`)) pathname = pathname.slice(BASE_PATH.length);
+      else {
+        res.writeHead(404).end('Not Found (basePath外のURL)');
+        return;
+      }
+    }
     if (pathname.endsWith('/')) pathname += 'index.html';
     else if (!extname(pathname)) pathname += '/index.html';
     const filePath = normalize(join(ROOT, pathname));
@@ -46,5 +58,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`serving out/ at http://localhost:${PORT}`);
+  console.log(`serving out/ at http://localhost:${PORT}${BASE_PATH}/`);
 });

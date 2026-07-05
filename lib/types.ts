@@ -7,8 +7,9 @@ export type AnbunType = 'percent' | 'fixed';
 /**
  * 決済手段(どの資産・負債が動いたか)。複式仕訳の相手勘定になる。
  * receivable/payable を選ぶと発生主義の記帳(売掛金・買掛金の計上)になる。
+ * deposit は預り金(給与から天引きした源泉所得税など)の計上に使う。
  */
-export type FundId = 'bank' | 'cash' | 'card' | 'receivable' | 'payable' | 'owner';
+export type FundId = 'bank' | 'cash' | 'card' | 'receivable' | 'payable' | 'deposit' | 'owner';
 
 /** 消費税の税区分(税込経理)。taxable10/8 は取引の収支に応じて課税売上/課税仕入になる */
 export type TaxCategory = 'taxable10' | 'taxable8' | 'exempt' | 'none';
@@ -90,6 +91,8 @@ export interface OpeningBalance {
   card: number;
   /** 買掛金・その他未払金 */
   payable: number;
+  /** 預り金(未納付の源泉所得税など) */
+  deposit: number;
 }
 
 /** 消費税の設定 */
@@ -216,6 +219,40 @@ export interface InventoryCount {
   amount: number;
 }
 
+/** 給与の源泉徴収税額の区分(甲欄/乙欄/丙欄/手入力) */
+export type SalaryTableType = 'kou' | 'otsu' | 'hei' | 'manual';
+
+/** 給与の支払い記録(賃金台帳のもとになる)。保存時に取引が自動起票される */
+export interface PayrollEntry {
+  id: string;
+  /** 従業員名 */
+  employee: string;
+  /** 支払日 YYYY-MM-DD */
+  date: string;
+  /** 総支給額 */
+  gross: number;
+  /** 源泉徴収税額(預り金として計上される) */
+  withholding: number;
+  /** 社会保険料等の天引き額(雇用保険料など。預り金として計上される)。源泉の判定はこの控除後の金額で行う */
+  socialInsurance?: number;
+  /** 適用した税額区分 */
+  table: SalaryTableType;
+  note?: string;
+  /** 自動起票した取引ID(手取りの支払い・源泉・社会保険料等の預り) */
+  linkedTxIds?: string[];
+  createdAt: number;
+}
+
+/** 取引先(請求書の宛先など)。請求書の保存時に自動登録される */
+export interface Partner {
+  id: string;
+  name: string;
+  /** 相手方のインボイス登録番号(仕入先の適格判定のメモ用) */
+  invoiceRegNumber: string;
+  memo: string;
+  createdAt: number;
+}
+
 /** 所得税シミュレーション用の所得控除入力(年ごとに1件) */
 export interface DeductionEntry {
   year: number;
@@ -282,6 +319,10 @@ export interface AppData {
   inventories: InventoryCount[];
   /** 所得控除の入力(年ごとに1件) */
   deductions: DeductionEntry[];
+  /** 取引先マスタ */
+  partners: Partner[];
+  /** 給与の支払い記録(賃金台帳) */
+  payrolls: PayrollEntry[];
 }
 
 export function uid(): string {

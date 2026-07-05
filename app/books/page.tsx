@@ -28,6 +28,7 @@ const OB_FIELDS: { key: keyof Omit<OpeningBalance, 'year'>; label: string; hint:
   { key: 'receivable', label: '売掛金', hint: '前年に計上し未回収の請求' },
   { key: 'card', label: 'カード未払金', hint: '前年利用・未引落しの額' },
   { key: 'payable', label: '買掛金・未払金', hint: 'その他の未払い' },
+  { key: 'deposit', label: '預り金', hint: '未納付の源泉所得税など' },
 ];
 
 export default function BooksPage() {
@@ -61,6 +62,7 @@ export default function BooksPage() {
       receivable: opening?.receivable ?? 0,
       card: opening?.card ?? 0,
       payable: opening?.payable ?? 0,
+      deposit: opening?.deposit ?? 0,
       inventory: inventoryAmount(store.inventories, year - 1),
       fixed_asset: store.assets
         .filter((a) => !isDeferred(a))
@@ -98,12 +100,13 @@ export default function BooksPage() {
       carry.bank !== opening.bank ||
       carry.receivable !== opening.receivable ||
       carry.card !== opening.card ||
-      carry.payable !== opening.payable
+      carry.payable !== opening.payable ||
+      carry.deposit !== opening.deposit
     );
   }, [opening, store.openingBalances, store.transactions, store.assets, store.inventories, year]);
 
   if (!store.ready) {
-    return <div className="py-24 text-center text-sm text-slate-400">読み込み中…</div>;
+    return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
   return (
@@ -116,6 +119,7 @@ export default function BooksPage() {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-3">
           <select
+            aria-label="年分を選択"
             className={selectCls}
             value={year}
             onChange={(e) => setYear(Number(e.target.value))}
@@ -143,7 +147,7 @@ export default function BooksPage() {
         {message && <Alert tone="success">{message}</Alert>}
 
         <OpeningBalanceCard
-          key={`${year}:${opening ? `${opening.cash}-${opening.bank}-${opening.receivable}-${opening.card}-${opening.payable}` : 'none'}`}
+          key={`${year}:${opening ? `${opening.cash}-${opening.bank}-${opening.receivable}-${opening.card}-${opening.payable}-${opening.deposit}` : 'none'}`}
           year={year}
           opening={opening}
           hasPrevData={
@@ -234,10 +238,11 @@ function InventoryCard({
         className="flex flex-wrap items-end gap-3"
       >
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">
+          <label htmlFor="book-inventory-opening" className="mb-1 block text-xs font-medium text-slate-500">
             期首棚卸高({year}年1月1日 = 前年末)
           </label>
           <input
+            id="book-inventory-opening"
             type="number"
             min={0}
             className={`${input} w-40`}
@@ -246,10 +251,11 @@ function InventoryCard({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">
+          <label htmlFor="book-inventory-closing" className="mb-1 block text-xs font-medium text-slate-500">
             期末棚卸高({year}年12月31日)
           </label>
           <input
+            id="book-inventory-closing"
             type="number"
             min={0}
             className={`${input} w-40`}
@@ -261,7 +267,7 @@ function InventoryCard({
           保存
         </button>
       </form>
-      <p className="mt-3 text-xs leading-relaxed text-slate-400">
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
         年末に在庫(商品・製品・材料)を数えて原価で評価した金額を入力してください。売上原価 =
         期首棚卸高 + 仕入高 −
         期末棚卸高として損益に反映され、期末棚卸高は貸借対照表の「棚卸資産」になります。
@@ -292,11 +298,12 @@ function OpeningBalanceCard({
     return v;
   });
 
-  const nums = OB_FIELDS.map((f) => {
-    const n = Number(values[f.key]);
+  const num = (key: string) => {
+    const n = Number(values[key]);
     return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
-  });
-  const capital = nums[0] + nums[1] + nums[2] - nums[3] - nums[4];
+  };
+  const capital =
+    num('cash') + num('bank') + num('receivable') - num('card') - num('payable') - num('deposit');
 
   return (
     <Card
@@ -314,21 +321,23 @@ function OpeningBalanceCard({
           e.preventDefault();
           onSave({
             year,
-            cash: nums[0],
-            bank: nums[1],
-            receivable: nums[2],
-            card: nums[3],
-            payable: nums[4],
+            cash: num('cash'),
+            bank: num('bank'),
+            receivable: num('receivable'),
+            card: num('card'),
+            payable: num('payable'),
+            deposit: num('deposit'),
           });
         }}
         className="flex flex-wrap items-end gap-3"
       >
         {OB_FIELDS.map((f) => (
           <div key={f.key}>
-            <label className="mb-1 block text-xs font-medium text-slate-500" title={f.hint}>
+            <label htmlFor={`book-opening-${f.key}`} className="mb-1 block text-xs font-medium text-slate-500" title={f.hint}>
               {f.label}
             </label>
             <input
+              id={`book-opening-${f.key}`}
               type="number"
               min={0}
               className={`${input} w-32`}
@@ -345,7 +354,7 @@ function OpeningBalanceCard({
           {opening ? '上書き保存' : '保存'}
         </button>
       </form>
-      <p className="mt-3 text-xs leading-relaxed text-slate-400">
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
         初めて登録する年は、1月1日時点の事業用の現金・預金残高などを入力してください(元入金 =
         資産合計 −
         負債合計)。翌年以降は「前年末の残高から自動設定」で繰り越せます(翌年の元入金 = 元入金 +
@@ -452,7 +461,7 @@ function BalanceSheetCard({ bs }: { bs: BalanceSheet }) {
           </table>
         </div>
       </div>
-      <p className="mt-3 text-xs leading-relaxed text-slate-400">
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
         「青色申告特別控除前の所得金額」はダッシュボードの差引金額と一致します。翌年の元入金は{' '}
         <strong className="text-slate-500">{yen(bs.nextCapital)}</strong>
         (元入金 + 所得 + 事業主借 − 事業主貸)です。銀行・カードの明細をすべて取り込み、
@@ -568,7 +577,7 @@ function GeneralLedgerCard({
     <Card
       title="総勘定元帳"
       action={
-        <select className={selectCls} value={account} onChange={(e) => setAccount(e.target.value)}>
+        <select aria-label="勘定科目を選択" className={selectCls} value={account} onChange={(e) => setAccount(e.target.value)}>
           {options.map((o) => (
             <option key={o.id} value={o.id}>
               {o.label}
@@ -624,7 +633,7 @@ function GeneralLedgerCard({
           </table>
         </div>
       )}
-      <p className="mt-3 text-xs text-slate-400">
+      <p className="mt-3 text-xs text-slate-500">
         ※元入金({yen(capital)})は期首の 資産 − 負債 として自動計算され、元帳には登場しません。
       </p>
     </Card>

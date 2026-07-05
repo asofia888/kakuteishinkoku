@@ -56,7 +56,7 @@ export function StatCard({
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="text-xs font-medium text-slate-500">{label}</div>
       <div className={`tabular mt-1 text-2xl font-bold ${valueClass}`}>{value}</div>
-      {sub && <div className="mt-1 text-xs text-slate-400">{sub}</div>}
+      {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
     </div>
   );
 }
@@ -80,6 +80,63 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center text-sm text-slate-500">
       {children}
+    </div>
+  );
+}
+
+/**
+ * モーダルの共通シェル。ダイアログのアクセシビリティ要件をまとめて満たす:
+ * - role="dialog" / aria-modal / aria-label
+ * - Escape・背景クリックで閉じる
+ * - 開いたらダイアログへフォーカスを移し、閉じたら元の要素へ戻す
+ * - 表示中は背景のスクロールをロックする
+ */
+export function ModalShell({
+  label,
+  onClose,
+  overlayClassName = 'p-4 md:p-8',
+  className = '',
+  children,
+}: {
+  /** スクリーンリーダー向けのダイアログ名(例: 「証憑の添付」) */
+  label: string;
+  onClose: () => void;
+  /** 余白などオーバーレイ側の追加クラス */
+  overlayClassName?: string;
+  /** ダイアログ本体のクラス(幅・背景など) */
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      opener?.focus?.();
+    };
+  }, []);
+  return (
+    <div
+      className={`fixed inset-0 z-50 overflow-auto bg-slate-900/60 ${overlayClassName}`}
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        className={`focus:outline-none ${className}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
