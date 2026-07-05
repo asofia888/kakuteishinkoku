@@ -6,6 +6,7 @@ import {
   deriveJournal,
   entryForTransaction,
   generalLedger,
+  journalForYear,
 } from './ledger';
 import { FixedAsset, Transaction } from './types';
 
@@ -283,6 +284,50 @@ describe('固定資産・棚卸の帳簿統合', () => {
     const withoutPurchase = txs.filter((t) => t.account !== 'asset_purchase');
     const bs = buildBalanceSheet(withoutPurchase, year, opening, [pc, camera], inventories);
     expect(bs.balanced).toBe(false);
+  });
+});
+
+describe('除却資産の帳簿統合', () => {
+  const opening = { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 };
+  // 2025-07取得 240,000円・4年。2026-03-31除却 → 2026年は3ヶ月償却15,000・残存195,000
+  const pc: FixedAsset = {
+    id: 'a1',
+    name: 'ノートPC',
+    acquiredDate: '2025-07-10',
+    cost: 240000,
+    method: 'straight',
+    usefulLife: 4,
+    businessRatio: 100,
+    createdAt: 1,
+    disposedDate: '2026-03-31',
+  };
+
+  it('除却年は残存簿価が事業主貸へ振り替わり、B/Sから外れて貸借一致する', () => {
+    const bs = buildBalanceSheet([], 2026, opening, [pc], []);
+    const row = (rows: typeof bs.assets, id: string) => rows.find((r) => r.id === id)!;
+    expect(row(bs.assets, 'fixed_asset').opening).toBe(210000);
+    expect(row(bs.assets, 'fixed_asset').closing).toBe(0); // 帳簿から外れる
+    expect(row(bs.assets, 'owner_draw').closing).toBe(195000); // 残存簿価の振替
+    expect(bs.profit).toBe(-15000); // 損益は除却月までの償却費のみ(除却損は自動計上しない)
+    expect(bs.balanced).toBe(true);
+  });
+
+  it('除却の翌年もB/Sに現れず、繰越しても貸借一致する', () => {
+    const prev = buildBalanceSheet([], 2026, opening, [pc], []);
+    const bs = buildBalanceSheet([], 2027, carryForwardOpening(prev), [pc], []);
+    const row = (rows: typeof bs.assets, id: string) => rows.find((r) => r.id === id)!;
+    expect(row(bs.assets, 'fixed_asset').opening).toBe(0);
+    expect(row(bs.assets, 'fixed_asset').closing).toBe(0);
+    expect(bs.profit).toBe(0);
+    expect(bs.balanced).toBe(true);
+  });
+
+  it('仕訳帳に除却の振替仕訳(12/31付・事業主貸/減価償却資産)が出る', () => {
+    const entries = journalForYear([], 2026, [pc], []);
+    const disposal = entries.find((e) => e.txId === 'disposal-a1')!;
+    expect(disposal.date).toBe('2026-12-31');
+    expect(disposal.debits).toEqual([{ account: 'owner_draw', amount: 195000 }]);
+    expect(disposal.credits).toEqual([{ account: 'fixed_asset', amount: 195000 }]);
   });
 });
 

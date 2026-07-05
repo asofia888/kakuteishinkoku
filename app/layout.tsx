@@ -13,6 +13,10 @@ export const metadata: Metadata = {
   description:
     '個人事業主向けの確定申告(青色申告)帳簿管理アプリ。CSV取込・自動仕訳・家事按分・決算書集計。データは端末内(localStorage)にのみ保存されます。',
   manifest: `${basePath}/manifest.webmanifest`,
+  icons: {
+    // iOS Safari は manifest のアイコンを使わないため apple-touch-icon を明示する
+    apple: `${basePath}/apple-touch-icon.png`,
+  },
 };
 
 export const viewport: Viewport = {

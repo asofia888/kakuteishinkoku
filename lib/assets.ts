@@ -91,7 +91,10 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
   }
 
   // 定額法
-  const rate = straightLineRate(Math.max(2, asset.usefulLife));
+  // 償却率は千分率の整数(例: 7年 → 143)で持ち、浮動小数点誤差を避ける。
+  // cost × 0.143 × months / 12 は2進数で誤差が出て1円ズレることがある
+  // (例: 12,000円・1ヶ月 → 142円になってしまう。正しくは143円)
+  const rateM = Math.ceil(1000 / Math.max(2, asset.usefulLife));
   const rows: DepreciationRow[] = [];
   let book = asset.cost;
   for (let y = acq.y; y <= acq.y + 120; y++) {
@@ -100,7 +103,7 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
     const endMonth = disp && y === disp.y ? disp.m : 12;
     const months = endMonth - startMonth + 1;
     if (months <= 0) break;
-    let dep = Math.floor((asset.cost * rate * months) / 12);
+    let dep = Math.floor((asset.cost * rateM * months) / 12_000);
     // 備忘価額1円を残す
     if (book - dep < 1) dep = book - 1;
     if (dep <= 0) break;
@@ -109,6 +112,32 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
     if (book <= 1) break;
   }
   return rows;
+}
+
+/**
+ * 除却した資産のうち、その年に帳簿から外す残存簿価(事業主貸への振替額)。
+ * - 定額法のみ対象(償却は除却月で止まり、残った簿価が帳簿に残り続けるため)。
+ * - 一括償却資産は除却後も3年均等償却を続ける(税法上の扱い)ため対象外。
+ * - 少額特例は取得年に全額償却済み(残高0)、繰延資産は任意償却の余地を残すため対象外。
+ * 除却損(廃棄)か譲渡所得(売却)かはアプリでは判定できないため、損益には計上しない。
+ */
+export function disposalResidual(asset: FixedAsset, year: number): number {
+  if (asset.method !== 'straight' || !asset.disposedDate) return 0;
+  const acq = ymOf(asset.acquiredDate);
+  const disp = ymOf(asset.disposedDate);
+  if (!acq || !disp || disp.y !== year || disp.y < acq.y) return 0;
+  const depreciated = depreciationSchedule(asset)
+    .filter((r) => r.year <= year)
+    .reduce((s, r) => s + r.dep, 0);
+  return Math.max(0, asset.cost - depreciated);
+}
+
+/** 除却によりB/Sから外れている(残存簿価を事業主貸へ振替済み)資産か */
+function disposedOut(asset: FixedAsset, year: number): boolean {
+  if (asset.method !== 'straight' || !asset.disposedDate) return false;
+  const acq = ymOf(asset.acquiredDate);
+  const disp = ymOf(asset.disposedDate);
+  return !!acq && !!disp && disp.y <= year && disp.y >= acq.y;
 }
 
 /** 指定年の償却費(全額・事業分・家事分)。事業分は事業専用割合を掛けて切り捨て */
@@ -123,20 +152,24 @@ export function depreciationForYear(
   return { total: row.dep, business, ownerPart: row.dep - business, months: row.months };
 }
 
-/** 年初(1/1)時点の帳簿価額。取得前は0、償却終了後は残存簿価(定額法は1円) */
+/** 年初(1/1)時点の帳簿価額。取得前は0、償却終了後は残存簿価(定額法は1円)。
+ *  除却済み(定額法)は残存簿価を事業主貸へ振替済みのため、翌年以降は0 */
 export function bookValueAtStart(asset: FixedAsset, year: number): number {
   const acq = ymOf(asset.acquiredDate);
   if (!acq || acq.y >= year) return 0;
+  if (disposedOut(asset, year - 1)) return 0;
   const depreciated = depreciationSchedule(asset)
     .filter((r) => r.year < year)
     .reduce((s, r) => s + r.dep, 0);
   return Math.max(0, asset.cost - depreciated);
 }
 
-/** 年末(12/31)時点の帳簿価額(未償却残高) */
+/** 年末(12/31)時点の帳簿価額(未償却残高)。
+ *  除却済み(定額法)は除却年の12/31付で残存簿価を事業主貸へ振り替えるため0 */
 export function bookValueAtEnd(asset: FixedAsset, year: number): number {
   const acq = ymOf(asset.acquiredDate);
   if (!acq || acq.y > year) return 0;
+  if (disposedOut(asset, year)) return 0;
   const depreciated = depreciationSchedule(asset)
     .filter((r) => r.year <= year)
     .reduce((s, r) => s + r.dep, 0);
@@ -206,6 +239,7 @@ export function depreciationTableCsv(assets: FixedAsset[], year: number): string
     if (d.total === 0) continue;
     totalDep += d.total;
     totalBusiness += d.business;
+    const residual = disposalResidual(a, year);
     const note =
       a.method === 'immediate'
         ? '措法28の2(少額)'
@@ -214,7 +248,7 @@ export function depreciationTableCsv(assets: FixedAsset[], year: number): string
           : a.method === 'deferred'
             ? '繰延資産・任意償却'
             : a.disposedDate && a.disposedDate.slice(0, 4) === String(year)
-              ? `除却 ${a.disposedDate}`
+              ? `除却 ${a.disposedDate}${residual > 0 ? `(残存簿価${residual}円は事業主貸へ振替)` : ''}`
               : '';
     lines.push(
       [

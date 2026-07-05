@@ -2,7 +2,7 @@
 // 方針: ページ遷移(HTML)はネットワーク優先(更新を確実に反映)、
 // 静的アセットは stale-while-revalidate(表示は速く・裏で更新)。
 // バージョンはリリース時に上げる(古いキャッシュは activate で破棄される)。
-const VERSION = 'v3.6.0';
+const VERSION = 'v3.6.1';
 const CACHE = `shinkoku-snap-${VERSION}`;
 
 self.addEventListener('install', () => {
@@ -31,8 +31,12 @@ self.addEventListener('fetch', (event) => {
       (async () => {
         try {
           const fresh = await fetch(request);
-          const cache = await caches.open(CACHE);
-          cache.put(request, fresh.clone());
+          // デプロイ切替中の404/5xxをキャッシュするとオフライン時にエラー画面が固定化するため、
+          // 正常レスポンスだけを保存する
+          if (fresh.ok) {
+            const cache = await caches.open(CACHE);
+            cache.put(request, fresh.clone());
+          }
           return fresh;
         } catch {
           const cached = await caches.match(request);
@@ -51,8 +55,10 @@ self.addEventListener('fetch', (event) => {
       const cached = await caches.match(request);
       const refresh = fetch(request)
         .then(async (fresh) => {
-          const cache = await caches.open(CACHE);
-          cache.put(request, fresh.clone());
+          if (fresh.ok) {
+            const cache = await caches.open(CACHE);
+            cache.put(request, fresh.clone());
+          }
           return fresh;
         })
         .catch(() => undefined);

@@ -78,6 +78,18 @@ export const BLUE_DEDUCTION_OPTIONS = [650_000, 550_000, 100_000] as const;
 /** 住民税の概算(所得割 + 均等割。森林環境税を含むおおよその値) */
 export const RESIDENT_TAX = { rate: 0.1, perCapita: 5_000 };
 
+/**
+ * 住民税の基礎控除(概算用)。令和7年度改正の基礎控除引き上げは所得税のみで、
+ * 住民税は43万円のまま(2,400万円超は逓減)。所得税の基礎控除で代用すると
+ * 2025年分以降は住民税を大きく過小に見積もるため、基礎控除だけ引き直して計算する。
+ */
+export const RESIDENT_BASIC_DEDUCTION: DeductionStep[] = [
+  { limit: 24_000_000, amount: 430_000 },
+  { limit: 24_500_000, amount: 290_000 },
+  { limit: 25_000_000, amount: 150_000 },
+  { limit: Infinity, amount: 0 },
+];
+
 /** 個人事業税(第1種事業などの標準的な場合) */
 export const BUSINESS_TAX = { ownerDeduction: 2_900_000, rate: 0.05 };
 

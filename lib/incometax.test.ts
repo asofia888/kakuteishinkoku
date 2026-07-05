@@ -126,4 +126,15 @@ describe('simulateIncomeTax', () => {
     expect(r.businessTaxEst).toBe((5_000_000 - 2_900_000) * 0.05);
     expect(simulateIncomeTax(2_000_000, ded({})).businessTaxEst).toBe(0);
   });
+
+  it('住民税の概算は基礎控除を43万円(住民税の額)に置き換えて計算する', () => {
+    // 事業所得500万 − 青色65万 = 所得435万。社保80万。
+    // 所得税: 基礎68万(2026年) → 課税所得287万 / 住民税: 基礎43万 → 課税標準312万
+    const r = simulateIncomeTax(5_000_000, ded({ socialInsurance: 800_000 }));
+    expect(r.taxable).toBe(2_870_000);
+    expect(r.residentTaxEst).toBe(3_120_000 * 0.1 + 5_000);
+    // 改正のない2024年分は差が5万円(48万−43万)だけ
+    const r2024 = simulateIncomeTax(5_000_000, ded({ year: 2024, socialInsurance: 800_000 }));
+    expect(r2024.residentTaxEst).toBe((r2024.taxable + 50_000) * 0.1 + 5_000);
+  });
 });

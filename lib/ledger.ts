@@ -4,6 +4,7 @@ import {
   bookValueAtEnd,
   bookValueAtStart,
   depreciationForYear,
+  disposalResidual,
   isDeferred,
 } from './assets';
 import { escapeFormulaCell } from './csv';
@@ -217,6 +218,29 @@ export function depreciationEntries(assets: FixedAsset[], year: number): Journal
 }
 
 /**
+ * 除却した資産(定額法)の残存簿価を事業主貸へ振り替える決算整理仕訳(12/31付)。
+ * (借)事業主貸 / (貸)減価償却資産
+ * 除却損(廃棄=必要経費)か売却(譲渡所得)かはアプリでは判定できないため、
+ * 損益には計上せず帳簿から外すだけにする(税務上の処理は手動)。
+ * 一括償却資産は除却後も3年均等償却を続けるため対象外。
+ */
+export function disposalEntries(assets: FixedAsset[], year: number): JournalEntry[] {
+  const entries: JournalEntry[] = [];
+  for (const a of assets) {
+    const residual = disposalResidual(a, year);
+    if (residual <= 0) continue;
+    entries.push({
+      txId: `disposal-${a.id}`,
+      date: `${year}-12-31`,
+      description: `除却による振替 ${a.name}(残存簿価。除却日 ${a.disposedDate})`,
+      debits: [{ account: 'owner_draw', amount: residual }],
+      credits: [{ account: 'fixed_asset', amount: residual }],
+    });
+  }
+  return entries;
+}
+
+/**
  * 繰延資産(開業費)の計上仕訳。開業費は通常、開業前に個人資金で支出するため、
  * 台帳に登録された年に (借)繰延資産 / (貸)事業主借 を自動起票する
  * (「固定資産の取得」取引は不要。貸借は常に一致する)。
@@ -279,6 +303,7 @@ export function journalForYear(
     ...deriveJournal(transactionsOfYear(transactions, year)),
     ...deferredAcquisitionEntries(assets, year),
     ...depreciationEntries(assets, year),
+    ...disposalEntries(assets, year),
     ...inventoryEntries(inventories, year),
   ];
 }

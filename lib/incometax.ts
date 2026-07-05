@@ -3,6 +3,7 @@ import {
   BUSINESS_TAX,
   incomeTaxBracketsFor,
   RECONSTRUCTION_TAX,
+  RESIDENT_BASIC_DEDUCTION,
   RESIDENT_TAX,
 } from './taxparams';
 import { DeductionEntry } from './types';
@@ -55,7 +56,7 @@ export interface IncomeTaxResult {
   totalTax: number;
   /** 申告納税額 = 税額 − 源泉徴収税額(プラス=納付・100円未満切り捨て、マイナス=還付) */
   balanceDue: number;
-  /** 住民税の概算(所得割10% + 均等割約5,000円。控除額の違いは無視した目安) */
+  /** 住民税の概算(所得割10% + 均等割約5,000円。基礎控除は住民税の43万円で計算し、人的控除等のその他の差額は無視した目安) */
   residentTaxEst: number;
   /** 個人事業税の概算(事業主控除290万円・税率5%の業種前提。青色控除前の所得で計算) */
   businessTaxEst: number;
@@ -108,8 +109,15 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
   const rawBalance = totalTax - d.withholding;
   const balanceDue = rawBalance > 0 ? Math.floor(rawBalance / 100) * 100 : rawBalance;
 
+  // 住民税: 基礎控除は所得税(2025年分〜58万+時限上乗せ)と異なり43万円のままのため、
+  // 基礎控除だけ住民税の額に置き換えた課税標準で概算する(扶養控除等のその他の差は未反映)
+  const residentBasic = RESIDENT_BASIC_DEDUCTION.find((s) => totalIncome <= s.limit)!.amount;
+  const residentTaxable =
+    Math.floor(Math.max(0, totalIncome - (totalDeductions - basic + residentBasic)) / 1000) * 1000;
   const residentTaxEst =
-    taxable > 0 ? Math.floor(taxable * RESIDENT_TAX.rate) + RESIDENT_TAX.perCapita : 0;
+    residentTaxable > 0
+      ? Math.floor(residentTaxable * RESIDENT_TAX.rate) + RESIDENT_TAX.perCapita
+      : 0;
   const businessTaxEst = Math.floor(
     Math.max(0, profit - BUSINESS_TAX.ownerDeduction) * BUSINESS_TAX.rate,
   );

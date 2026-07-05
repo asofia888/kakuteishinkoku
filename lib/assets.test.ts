@@ -4,6 +4,7 @@ import {
   bookValueAtStart,
   depreciationForYear,
   depreciationSchedule,
+  disposalResidual,
   straightLineRate,
   yearDepreciationTotals,
 } from './assets';
@@ -65,6 +66,43 @@ describe('depreciationSchedule: 定額法', () => {
       { year: 2026, months: 3, opening: 210000, dep: 15000, closing: 195000 },
     ]);
   });
+
+  it('償却費は整数演算で計算する(浮動小数点の1円ズレの回帰)', () => {
+    // 7年(率0.143)・12月取得(1ヶ月)・12,000円: float計算だと 142円 になってしまう
+    // 正: floor(12,000 × 143 × 1 / 12,000) = 143円
+    const rows = depreciationSchedule(
+      asset({ cost: 12_000, usefulLife: 7, acquiredDate: '2026-12-05' }),
+    );
+    expect(rows[0]).toMatchObject({ year: 2026, months: 1, dep: 143 });
+    // 84,000円でも同様(float: 1,000円 / 正: 1,001円)
+    const rows2 = depreciationSchedule(
+      asset({ cost: 84_000, usefulLife: 7, acquiredDate: '2026-12-05' }),
+    );
+    expect(rows2[0].dep).toBe(1_001);
+  });
+});
+
+describe('disposalResidual: 除却時の残存簿価(事業主貸への振替額)', () => {
+  it('除却年に「取得価額 − 償却累計」を返し、他の年は0', () => {
+    const a = asset({ disposedDate: '2026-03-31' }); // 2026年3ヶ月償却後の残存 195,000
+    expect(disposalResidual(a, 2026)).toBe(195000);
+    expect(disposalResidual(a, 2025)).toBe(0);
+    expect(disposalResidual(a, 2027)).toBe(0); // 振替済み
+  });
+
+  it('償却終了後(備忘価額1円)の除却は1円を振り替える', () => {
+    const a = asset({ disposedDate: '2031-06-15' }); // 2029年に1円まで償却済み
+    expect(disposalResidual(a, 2031)).toBe(1);
+  });
+
+  it('一括償却(3年均等を続ける)・少額特例(残高0)は対象外', () => {
+    const lump = asset({ method: 'lump3', cost: 150000, acquiredDate: '2025-05-01', disposedDate: '2026-02-01' });
+    expect(disposalResidual(lump, 2026)).toBe(0);
+    // 一括償却は除却後も償却が続く
+    expect(depreciationForYear(lump, 2027).total).toBe(50000);
+    const imm = asset({ method: 'immediate', cost: 280000, acquiredDate: '2025-05-01', disposedDate: '2026-02-01' });
+    expect(disposalResidual(imm, 2026)).toBe(0);
+  });
 });
 
 describe('depreciationSchedule: 一括償却・少額特例', () => {
@@ -115,6 +153,18 @@ describe('帳簿価額(貸借対照表用)', () => {
     expect(bookValueAtEnd(a, 2026)).toBe(150000);
     expect(bookValueAtEnd(a, 2029)).toBe(1); // 償却終了後は備忘価額
     expect(bookValueAtEnd(a, 2035)).toBe(1);
+  });
+
+  it('除却した資産は除却年の期末からB/Sに残らない(残存簿価は事業主貸へ)', () => {
+    const d = asset({ disposedDate: '2026-03-31' });
+    expect(bookValueAtEnd(d, 2025)).toBe(210000); // 除却前は従来どおり
+    expect(bookValueAtStart(d, 2026)).toBe(210000);
+    expect(bookValueAtEnd(d, 2026)).toBe(0); // 除却年の年末は帳簿から外れる
+    expect(bookValueAtStart(d, 2027)).toBe(0);
+    expect(bookValueAtEnd(d, 2030)).toBe(0);
+    // 一括償却は除却後も未償却残高が残る(3年均等を続ける)
+    const lump = asset({ method: 'lump3', cost: 150000, acquiredDate: '2025-05-01', disposedDate: '2026-02-01' });
+    expect(bookValueAtEnd(lump, 2026)).toBe(50000);
   });
 });
 
