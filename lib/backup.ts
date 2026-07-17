@@ -1,3 +1,4 @@
+import { MAX_FILE_SIZE, PortableFile } from './files';
 import {
   AnbunSetting,
   AppData,
@@ -26,15 +27,23 @@ import {
  */
 
 const APP_TAG = 'shinkoku-snap';
-const BACKUP_VERSION = 6;
+// v7: 証憑(files: PortableFile[])をエンベロープに同梱できるようになった
+const BACKUP_VERSION = 7;
 
 const FUND_IDS: FundId[] = ['bank', 'cash', 'card', 'receivable', 'payable', 'deposit', 'owner'];
 const TAX_CATEGORIES: TaxCategory[] = ['taxable10', 'taxable8', 'exempt', 'none'];
 
-/** 全データをバックアップ用JSON文字列にする */
-export function buildBackupJson(data: AppData): string {
+/** 全データをバックアップ用JSON文字列にする(files を渡すと証憑も同梱する) */
+export function buildBackupJson(data: AppData, files?: PortableFile[]): string {
   return JSON.stringify(
-    { app: APP_TAG, version: BACKUP_VERSION, exportedAt: new Date().toISOString(), data },
+    {
+      app: APP_TAG,
+      version: BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      data,
+      // キーの有無で「証憑を含むバックアップか」を判別する(旧版は undefined)
+      ...(files ? { files } : {}),
+    },
     null,
     2,
   );
@@ -54,6 +63,53 @@ export function parseBackupJson(text: string): AppData | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * バックアップJSONに同梱された証憑(files)を検証して取り出す。
+ * 証憑キー自体がない(v6以前・生データ)場合は null を返し、
+ * 呼び出し側は IndexedDB に触らない(既存の証憑を保つ)。
+ * キーがあれば壊れた要素を捨てた配列を返し、呼び出し側は全置き換えする。
+ */
+export function parseBackupFilesJson(text: string): PortableFile[] | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || !('files' in parsed)) return null;
+    const raw = (parsed as { files: unknown }).files;
+    if (!Array.isArray(raw)) return null;
+    const seen = new Set<string>();
+    const out: PortableFile[] = [];
+    for (const item of raw) {
+      const f = sanitizePortableFile(item);
+      if (!f || seen.has(f.id)) continue;
+      seen.add(f.id);
+      out.push(f);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+function sanitizePortableFile(raw: unknown): PortableFile | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const f = raw as Partial<PortableFile>;
+  if (typeof f.txId !== 'string' || f.txId === '') return null;
+  if (typeof f.data !== 'string' || f.data === '' || !BASE64_RE.test(f.data)) return null;
+  // base64はバイナリの約4/3倍。上限超のファイルは保存時と同様に受け入れない
+  if (f.data.length > (MAX_FILE_SIZE * 4) / 3 + 4) return null;
+  return {
+    id: typeof f.id === 'string' && f.id !== '' ? f.id : uid(),
+    txId: f.txId,
+    name: typeof f.name === 'string' && f.name !== '' ? f.name : '証憑',
+    type: typeof f.type === 'string' ? f.type : 'application/octet-stream',
+    size: typeof f.size === 'number' && Number.isFinite(f.size) ? Math.round(f.size) : 0,
+    createdAt:
+      typeof f.createdAt === 'number' && Number.isFinite(f.createdAt) ? f.createdAt : Date.now(),
+    data: f.data,
+  };
 }
 
 /**

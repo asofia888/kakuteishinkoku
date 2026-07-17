@@ -1106,7 +1106,7 @@ function AttachmentsModal({ t, onClose }: { t: Transaction; onClose: () => void 
         </div>
 
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
-          証憑はこの端末のブラウザ(IndexedDB)にのみ保存され、<strong>バックアップJSONには含まれません</strong>。
+          証憑はこの端末のブラウザ(IndexedDB)に保存され、<strong>バックアップJSONにも同梱されます</strong>。
           電子帳簿保存法の検索(日付・金額・取引先)は取引一覧の検索・絞り込みで行えます。
           電子取引の原本データは、訂正削除防止の事務処理規程を整えた上で元ファイルも別途保管しておくと安全です。
         </p>

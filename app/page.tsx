@@ -13,9 +13,16 @@ import {
   summaryToCsv,
   transactionsOfYear,
 } from '@/lib/aggregate';
-import { buildBackupJson, isNewerBackup, parseBackupJson } from '@/lib/backup';
+import { buildBackupJson, isNewerBackup, parseBackupFilesJson, parseBackupJson } from '@/lib/backup';
 import { downloadText, transactionsToCsv } from '@/lib/csv';
-import { deleteOrphans, formatBytes, totalUsage } from '@/lib/files';
+import {
+  deleteOrphans,
+  exportAllFiles,
+  formatBytes,
+  PortableFile,
+  restoreAllFiles,
+  totalUsage,
+} from '@/lib/files';
 import { today, yen } from '@/lib/format';
 import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
@@ -73,12 +80,20 @@ export default function DashboardPage() {
     store.loadDemoData();
   };
 
-  const downloadBackup = () =>
+  const downloadBackup = async () => {
+    // 証憑(IndexedDB)も同梱する。読み出せない環境でも帳簿だけはバックアップする
+    let files: PortableFile[] = [];
+    try {
+      files = await exportAllFiles();
+    } catch {
+      alert('証憑の読み出しに失敗したため、帳簿データのみのバックアップを作成します。');
+    }
     downloadText(
       `申告スナップ_バックアップ_${today()}.json`,
-      buildBackupJson(store.exportData()),
+      buildBackupJson(store.exportData(), files),
       'application/json',
     );
+  };
 
   const onRestoreFile = async (file: File) => {
     const text = await file.text();
@@ -94,12 +109,27 @@ export default function DashboardPage() {
     const newerWarn = isNewerBackup(text)
       ? '\n\n注意: このバックアップは新しいバージョンの申告スナップで作成されています。このバージョンで読み取れない項目があると、その部分は失われます。'
       : '';
+    // 証憑キーの有無で挙動を分ける: v7以降は同梱の証憑で全置き換え、
+    // v6以前(キーなし)は端末の証憑に触れない(残骸は孤立掃除で消せる)
+    const files = parseBackupFilesJson(text);
+    const fileNote = files !== null ? `・証憑${files.length}件` : '';
     if (
       confirm(
-        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件)で現在のデータをすべて置き換えます。${newerWarn}\nよろしいですか?`,
+        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件${fileNote})で現在のデータをすべて置き換えます。${newerWarn}\nよろしいですか?`,
       )
     ) {
       store.restoreData(data);
+      if (files !== null) {
+        try {
+          const restored = await restoreAllFiles(files);
+          void totalUsage().then(setFileUsage);
+          if (restored < files.length) {
+            alert(`証憑の一部(${files.length - restored}件)は壊れていたため復元できませんでした。`);
+          }
+        } catch {
+          alert('帳簿は復元しましたが、証憑の復元に失敗しました。ブラウザのストレージ設定をご確認ください。');
+        }
+      }
     }
   };
 
@@ -497,7 +527,7 @@ export default function DashboardPage() {
               ※データはこの端末のブラウザ内(localStorage)にのみ保存されています。ブラウザのデータ消去や
               端末の故障で帳簿が失われるため、<strong className="text-slate-500">定期的にバックアップをダウンロード</strong>
               して保管してください(帳簿・書類は原則7年の保存義務があります)。
-              証憑ファイル(📎)はブラウザ内(IndexedDB)保存で、バックアップJSONには含まれません。
+              証憑ファイル(📎)もバックアップJSONに含まれます(復元時はバックアップの証憑で置き換え)。
             </p>
           </Card>
         </div>

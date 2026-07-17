@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildBackupJson, isNewerBackup, parseBackupJson, sanitizeAppData } from './backup';
+import {
+  buildBackupJson,
+  isNewerBackup,
+  parseBackupFilesJson,
+  parseBackupJson,
+  sanitizeAppData,
+} from './backup';
+import { PortableFile } from './files';
 import { AppData, DEFAULT_ISSUER, DEFAULT_TAX_SETTINGS, Transaction } from './types';
 
 const goodTx: Transaction = {
@@ -93,6 +100,60 @@ describe('parseBackupJson: 不正な入力', () => {
     expect(parseBackupJson('{}')).toBeNull();
     expect(parseBackupJson('123')).toBeNull();
     expect(parseBackupJson(JSON.stringify({ transactions: '配列でない' }))).toBeNull();
+  });
+});
+
+describe('parseBackupFilesJson: 証憑の同梱と復元', () => {
+  const goodFile: PortableFile = {
+    id: 'f-1',
+    txId: 'tx-1',
+    name: '領収書.pdf',
+    type: 'application/pdf',
+    size: 5,
+    createdAt: 5000,
+    data: 'aGVsbG8=', // "hello"
+  };
+
+  it('files付きバックアップは帳簿と証憑の両方を往復できる', () => {
+    const json = buildBackupJson(goodData, [goodFile]);
+    expect(parseBackupJson(json)).toEqual(goodData);
+    expect(parseBackupFilesJson(json)).toEqual([goodFile]);
+  });
+
+  it('filesキーがない(v6以前・生データ)は null = 端末の証憑に触れない', () => {
+    expect(parseBackupFilesJson(buildBackupJson(goodData))).toBeNull();
+    expect(parseBackupFilesJson(JSON.stringify(goodData))).toBeNull();
+    expect(parseBackupFilesJson('壊れたJSON')).toBeNull();
+  });
+
+  it('壊れた証憑(txIdなし・base64不正・上限超過)は捨て、ID重複は最初の1件だけ残す', () => {
+    const oversized = 'A'.repeat(Math.ceil((10 * 1024 * 1024 * 4) / 3) + 8);
+    const json = buildBackupJson(goodData, [
+      goodFile,
+      { ...goodFile, id: 'f-1' }, // ID重複 → 捨てる
+      { ...goodFile, id: 'f-2', txId: '' }, // 紐づく取引なし → 捨てる
+      { ...goodFile, id: 'f-3', data: 'これはbase64ではない' },
+      { ...goodFile, id: 'f-4', data: oversized },
+    ]);
+    expect(parseBackupFilesJson(json)).toEqual([goodFile]);
+  });
+
+  it('欠けたメタ情報(名前・種類)は既定値で補う', () => {
+    const json = JSON.stringify({
+      app: 'shinkoku-snap',
+      version: 7,
+      data: goodData,
+      files: [{ txId: 'tx-1', data: 'aGVsbG8=' }],
+    });
+    const files = parseBackupFilesJson(json)!;
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({
+      txId: 'tx-1',
+      name: '証憑',
+      type: 'application/octet-stream',
+      data: 'aGVsbG8=',
+    });
+    expect(files[0].id).not.toBe('');
   });
 });
 
