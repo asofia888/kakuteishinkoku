@@ -1,0 +1,48 @@
+---
+name: verify
+description: 申告スナップ(Next.js静的エクスポート)の変更をローカルの実ブラウザで動作確認する手順。ビルド→配信→Playwright直叩き。
+---
+
+# 申告スナップの動作確認手順
+
+## ビルドと配信
+
+```bash
+npx next build                      # out/ に静的エクスポート(sw.js等 public/ の変更もここで反映)
+node scripts/serve-out.mjs          # http://127.0.0.1:4173 で配信(バックグラウンド起動)
+```
+
+サブパス構成(GitHub Pages 再現)を試すときは、ビルドと配信の両方に
+`NEXT_PUBLIC_BASE_PATH=/kakuteishinkoku` を付ける。
+
+## Chromium の起動(WSL の欠損ライブラリ対策)
+
+この WSL には libnss3 等がなく、素の `npx playwright test` は起動に失敗する(sudo も使えない)。
+root 権限なしの回避策: 必要な .deb を展開して LD_LIBRARY_PATH で補う。
+
+```bash
+mkdir -p "$SCRATCHPAD/libs" && cd "$SCRATCHPAD/libs"
+apt-get download libnspr4 libnss3 libasound2t64
+for f in *.deb; do dpkg -x "$f" extracted/; done
+```
+
+## 検証スクリプトの実行
+
+Playwright を直接 require するドライバ(.js)を scratchpad に書き、次のように実行する:
+
+```bash
+NODE_PATH="<repo>/node_modules" \
+LD_LIBRARY_PATH="$SCRATCHPAD/libs/extracted/usr/lib/x86_64-linux-gnu:$SCRATCHPAD/libs/extracted/usr/lib/x86_64-linux-gnu/nss" \
+node "$SCRATCHPAD/verify-driver.js"
+```
+
+- `const { chromium } = require('@playwright/test')` で起動できる(NODE_PATH 必須。スクリプトが repo 外にあるため)
+- 既存の E2E 一式(`npx playwright test`)も同じ LD_LIBRARY_PATH で通る
+
+## 駆動時の注意
+
+- 削除・データ置換・サンプル読込は `confirm()` を挟む → `page.on('dialog', d => d.accept())` か `page.once('dialog', ...)` で処理
+- 日本語テキスト照合は全角/半角括弧の取り違えに注意(正規表現で括弧非依存のパターンにする)
+- データ投入の最短経路: ダッシュボードの「サンプルデータを読み込む」ボタン(空状態なら confirm なし)
+- バックアップ復元はダッシュボードの hidden input `input[aria-label="バックアップファイルを選択"]` に `setInputFiles` で直接渡せる
+- 取引一覧の金額列は 4 列目(`tr.children[3]`)、`¥85,000` 形式

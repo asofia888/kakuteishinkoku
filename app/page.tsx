@@ -13,7 +13,7 @@ import {
   summaryToCsv,
   transactionsOfYear,
 } from '@/lib/aggregate';
-import { buildBackupJson, parseBackupJson } from '@/lib/backup';
+import { buildBackupJson, isNewerBackup, parseBackupJson } from '@/lib/backup';
 import { downloadText, transactionsToCsv } from '@/lib/csv';
 import { deleteOrphans, formatBytes, totalUsage } from '@/lib/files';
 import { today, yen } from '@/lib/format';
@@ -89,9 +89,14 @@ export default function DashboardPage() {
       alert('バックアップファイルとして読み取れませんでした。「申告スナップ」でダウンロードしたJSONファイルをご指定ください。');
       return;
     }
+    // 新しいバージョンのアプリで作られたバックアップは、このアプリが知らない項目が
+    // 取り込まれず失われる可能性があるため、置き換える前に注意を挟む
+    const newerWarn = isNewerBackup(text)
+      ? '\n\n注意: このバックアップは新しいバージョンの申告スナップで作成されています。このバージョンで読み取れない項目があると、その部分は失われます。'
+      : '';
     if (
       confirm(
-        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件)で現在のデータをすべて置き換えます。よろしいですか?`,
+        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件)で現在のデータをすべて置き換えます。${newerWarn}\nよろしいですか?`,
       )
     ) {
       store.restoreData(data);

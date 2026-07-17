@@ -57,6 +57,22 @@ export function parseBackupJson(text: string): AppData | null {
 }
 
 /**
+ * バックアップがこのアプリより新しい版で作られたものかを調べる。
+ * 新しい版でも読み込み自体は行う(既知の項目だけ取り込む)が、
+ * このアプリが知らない項目は失われるため、復元前の警告に使う。
+ */
+export function isNewerBackup(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') return false;
+    const p = parsed as { app?: unknown; version?: unknown };
+    return p.app === APP_TAG && typeof p.version === 'number' && p.version > BACKUP_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 未知のデータを AppData として検証・補正する。
  * 壊れた要素は捨て、全く形が違う場合は null を返す。
  */
@@ -185,8 +201,10 @@ function sanitizeOpeningBalance(raw: unknown): OpeningBalance | null {
   ) {
     return null;
   }
+  // 「前年末の残高から自動設定」は前年末B/Sの写しなので、負の残高(現金の使いすぎ等)も
+  // そのまま入り得る。0に補正するとリロードのたびに帳簿が静かにズレるため符号は保つ
   const amount = (v: unknown) =>
-    typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : 0;
+    typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : 0;
   return {
     year: o.year,
     cash: amount(o.cash),

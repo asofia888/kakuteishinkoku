@@ -298,9 +298,10 @@ function OpeningBalanceCard({
     return v;
   });
 
+  // 前年末繰越で入った負の残高(現金の使いすぎ等)も、そのまま保存し直せるようにする
   const num = (key: string) => {
     const n = Number(values[key]);
-    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+    return Number.isFinite(n) ? Math.round(n) : 0;
   };
   const capital =
     num('cash') + num('bank') + num('receivable') - num('card') - num('payable') - num('deposit');
@@ -339,7 +340,6 @@ function OpeningBalanceCard({
             <input
               id={`book-opening-${f.key}`}
               type="number"
-              min={0}
               className={`${input} w-32`}
               value={values[f.key]}
               onChange={(e) => setValues((prev) => ({ ...prev, [f.key]: e.target.value }))}

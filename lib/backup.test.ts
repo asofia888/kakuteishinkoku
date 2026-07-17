@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildBackupJson, parseBackupJson, sanitizeAppData } from './backup';
+import { buildBackupJson, isNewerBackup, parseBackupJson, sanitizeAppData } from './backup';
 import { AppData, DEFAULT_ISSUER, DEFAULT_TAX_SETTINGS, Transaction } from './types';
 
 const goodTx: Transaction = {
@@ -93,6 +93,26 @@ describe('parseBackupJson: 不正な入力', () => {
     expect(parseBackupJson('{}')).toBeNull();
     expect(parseBackupJson('123')).toBeNull();
     expect(parseBackupJson(JSON.stringify({ transactions: '配列でない' }))).toBeNull();
+  });
+});
+
+describe('isNewerBackup: バックアップ版数の前方互換チェック', () => {
+  const envelope = (version: unknown, app: unknown = 'shinkoku-snap') =>
+    JSON.stringify({ app, version, exportedAt: '2026-07-17T00:00:00.000Z', data: {} });
+
+  it('このアプリ自身の出力は新しい版と判定しない', () => {
+    expect(isNewerBackup(buildBackupJson(goodData))).toBe(false);
+  });
+
+  it('新しい版のバックアップだけを検知する(古い版は対象外)', () => {
+    expect(isNewerBackup(envelope(999))).toBe(true);
+    expect(isNewerBackup(envelope(1))).toBe(false);
+  });
+
+  it('別アプリのJSON・版数のない生データ・壊れたJSONは対象外', () => {
+    expect(isNewerBackup(envelope(999, 'other-app'))).toBe(false);
+    expect(isNewerBackup(JSON.stringify(goodData))).toBe(false); // localStorage の生データ形式
+    expect(isNewerBackup('壊れたJSON')).toBe(false);
   });
 });
 
@@ -229,6 +249,28 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
       deposit: 0,
     });
     expect(data.taxSettings).toEqual({ ...DEFAULT_TAX_SETTINGS, taxable: true });
+  });
+
+  it('期首残高の負値(前年末繰越のマイナス残高)は0化せず保持する(回帰)', () => {
+    // 「前年末の残高から自動設定」で入った負の残高が、リロード(sanitize往復)で
+    // 0に化けると貸借対照表が前年末と静かに食い違う
+    const data = sanitizeAppData({
+      transactions: [],
+      rules: [],
+      anbunSettings: [],
+      openingBalances: [
+        { year: 2027, cash: -3500, bank: 120000.4, receivable: 0, card: -200, payable: 0, deposit: 0 },
+      ],
+    })!;
+    expect(data.openingBalances[0]).toEqual({
+      year: 2027,
+      cash: -3500,
+      bank: 120000,
+      receivable: 0,
+      card: -200,
+      payable: 0,
+      deposit: 0,
+    });
   });
 
   it('請求書は番号必須・不正な明細/日付を補正して引き継ぐ', () => {

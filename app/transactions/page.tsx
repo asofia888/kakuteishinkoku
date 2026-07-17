@@ -73,8 +73,9 @@ export default function TransactionsPage() {
   const [message, setMessage] = useState<string | null>(null);
   /** 取引一覧カード内に表示するメッセージ(ルール適用・手入力の結果) */
   const [listMessage, setListMessage] = useState<string | null>(null);
-  /** 直前に削除した取引(「元に戻す」用) */
-  const [lastDeleted, setLastDeleted] = useState<Transaction[] | null>(null);
+  /** 削除した取引の履歴(「元に戻す」で新しい順に1回ずつ復元する。直近20回分) */
+  const [deletedStack, setDeletedStack] = useState<Transaction[][]>([]);
+  const lastDeleted = deletedStack.length > 0 ? deletedStack[deletedStack.length - 1] : null;
 
   // ── 証憑(添付ファイル)──
   const [fileCounts, setFileCounts] = useState<Map<string, number>>(new Map());
@@ -90,6 +91,9 @@ export default function TransactionsPage() {
   const [typeFilter, setTypeFilter] = useState<'all' | TxType>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [q, setQ] = useState('');
+  /** 金額の範囲絞り込み(電子帳簿保存法の検索要件: 金額は範囲指定で探せること) */
+  const [amountMin, setAmountMin] = useState('');
+  const [amountMax, setAmountMax] = useState('');
   const [visible, setVisible] = useState(200);
 
   // ── 手入力フォーム ──
@@ -218,6 +222,8 @@ export default function TransactionsPage() {
   // ── 一覧のフィルタリング ──
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
+    const min = amountMin === '' ? null : Number(amountMin);
+    const max = amountMax === '' ? null : Number(amountMax);
     return [...store.transactions]
       .filter((t) => {
         if (yearFilter !== 'all' && !t.date.startsWith(`${yearFilter}-`)) return false;
@@ -232,10 +238,12 @@ export default function TransactionsPage() {
         if (statusFilter === 'approved' && !t.approved) return false;
         if (statusFilter === 'excluded' && !isExcluded(t.account)) return false;
         if (qq && !t.description.toLowerCase().includes(qq)) return false;
+        if (min !== null && Number.isFinite(min) && t.amount < min) return false;
+        if (max !== null && Number.isFinite(max) && t.amount > max) return false;
         return true;
       })
       .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
-  }, [store.transactions, yearFilter, monthFilter, typeFilter, statusFilter, q]);
+  }, [store.transactions, yearFilter, monthFilter, typeFilter, statusFilter, q, amountMin, amountMax]);
 
   // 対象外(プライベート)は承認の概念の外なので一括承認からも除く
   const unapprovedInView = filtered.filter(
@@ -245,7 +253,7 @@ export default function TransactionsPage() {
   const undoDelete = () => {
     if (!lastDeleted) return;
     store.restoreTransactions(lastDeleted);
-    setLastDeleted(null);
+    setDeletedStack((prev) => prev.slice(0, -1));
     setListMessage(
       lastDeleted.length === 1
         ? `「${lastDeleted[0].description}」を元に戻しました。`
@@ -506,7 +514,7 @@ export default function TransactionsPage() {
                   className="ml-2 font-semibold text-blue-700 underline hover:text-blue-800"
                   onClick={undoDelete}
                 >
-                  元に戻す
+                  元に戻す{deletedStack.length > 1 ? `(あと${deletedStack.length}回)` : ''}
                 </button>
               </Alert>
             </div>
@@ -578,6 +586,27 @@ export default function TransactionsPage() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
+            <input
+              type="number"
+              inputMode="numeric"
+              aria-label="金額の下限で絞り込み"
+              className={`${input} w-28`}
+              placeholder="金額 下限"
+              value={amountMin}
+              onChange={(e) => setAmountMin(e.target.value)}
+            />
+            <span className="text-xs text-slate-500" aria-hidden>
+              〜
+            </span>
+            <input
+              type="number"
+              inputMode="numeric"
+              aria-label="金額の上限で絞り込み"
+              className={`${input} w-28`}
+              placeholder="金額 上限"
+              value={amountMax}
+              onChange={(e) => setAmountMax(e.target.value)}
+            />
           </div>
 
           {filtered.length === 0 ? (
@@ -606,7 +635,8 @@ export default function TransactionsPage() {
                       fileCount={fileCounts.get(t.id) ?? 0}
                       onAttach={setAttachTx}
                       onDeleted={(tx) => {
-                        setLastDeleted([tx]);
+                        // 連続削除に備えて履歴として積む(直近20回分だけ保持)
+                        setDeletedStack((prev) => [...prev.slice(-19), [tx]]);
                         setListMessage(null);
                       }}
                     />
