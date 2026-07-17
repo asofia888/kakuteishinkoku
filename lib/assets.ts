@@ -1,10 +1,15 @@
 import { escapeFormulaCell } from './csv';
+import { declining200For } from './taxparams';
 import { FixedAsset } from './types';
 
 /**
  * 減価償却の計算(個人・平成19年4月1日以後取得の資産)。
  * - 定額法: 償却費 = 取得価額 × 償却率 × 使用月数/12(円未満切り捨て)。
  *   帳簿価額が1円(備忘価額)になるまで償却する。
+ * - 定率法(200%定率法・平成24年4月1日以後取得): 期首帳簿価額 × 償却率。
+ *   調整前償却額が償却保証額(取得価額×保証率)を下回った年からは
+ *   改定取得価額 × 改定償却率の均等償却に切り替え、1円まで償却する。
+ *   ※個人は定額法が法定償却方法のため、定率法は税務署への届出が必要。
  * - 一括償却資産(3年均等): 取得価額 × 1/3 ずつ。月割りなし・備忘価額なし。
  *   除却しても3年間の均等償却を続ける(税法上の扱い)。
  * - 少額減価償却資産の特例: 取得年に全額を必要経費に算入する。
@@ -90,6 +95,40 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
     ];
   }
 
+  if (asset.method === 'declining') {
+    // 200%定率法: 調整前償却額(期首簿価×償却率)が償却保証額を下回った年から
+    // 改定取得価額(その年の期首簿価)× 改定償却率で均等償却する
+    const { rate1000, revised1000, guarantee100000 } = declining200For(asset.usefulLife);
+    const guarantee = Math.floor((asset.cost * guarantee100000) / 100_000);
+    const rows: DepreciationRow[] = [];
+    let book = asset.cost;
+    let revisedBase: number | null = null;
+    for (let y = acq.y; y <= acq.y + 120; y++) {
+      if (disp && y > disp.y) break;
+      const startMonth = y === acq.y ? acq.m : 1;
+      const endMonth = disp && y === disp.y ? disp.m : 12;
+      const months = endMonth - startMonth + 1;
+      if (months <= 0) break;
+      if (revisedBase === null && Math.floor((book * rate1000) / 1000) < guarantee) {
+        revisedBase = book;
+      }
+      // 改定償却額(均等)は円未満を切り上げる。切り捨てると端数が累積して
+      // 耐用年数を1年はみ出し、切り上げなら残りの年数でちょうど1円まで償却が終わる
+      const annual =
+        revisedBase === null
+          ? Math.floor((book * rate1000) / 1000)
+          : Math.ceil((revisedBase * revised1000) / 1000);
+      let dep = Math.floor((annual * months) / 12);
+      // 備忘価額1円を残す
+      if (book - dep < 1) dep = book - 1;
+      if (dep <= 0) break;
+      rows.push({ year: y, months, opening: book, dep, closing: book - dep });
+      book -= dep;
+      if (book <= 1) break;
+    }
+    return rows;
+  }
+
   // 定額法
   // 償却率は千分率の整数(例: 7年 → 143)で持ち、浮動小数点誤差を避ける。
   // cost × 0.143 × months / 12 は2進数で誤差が出て1円ズレることがある
@@ -114,15 +153,20 @@ export function depreciationSchedule(asset: FixedAsset): DepreciationRow[] {
   return rows;
 }
 
+/** 除却時に残存簿価を事業主貸へ振り替える方式(償却が除却月で止まり簿価が残る方式) */
+function residualOnDisposal(method: FixedAsset['method']): boolean {
+  return method === 'straight' || method === 'declining';
+}
+
 /**
  * 除却した資産のうち、その年に帳簿から外す残存簿価(事業主貸への振替額)。
- * - 定額法のみ対象(償却は除却月で止まり、残った簿価が帳簿に残り続けるため)。
+ * - 定額法・定率法のみ対象(償却は除却月で止まり、残った簿価が帳簿に残り続けるため)。
  * - 一括償却資産は除却後も3年均等償却を続ける(税法上の扱い)ため対象外。
  * - 少額特例は取得年に全額償却済み(残高0)、繰延資産は任意償却の余地を残すため対象外。
  * 除却損(廃棄)か譲渡所得(売却)かはアプリでは判定できないため、損益には計上しない。
  */
 export function disposalResidual(asset: FixedAsset, year: number): number {
-  if (asset.method !== 'straight' || !asset.disposedDate) return 0;
+  if (!residualOnDisposal(asset.method) || !asset.disposedDate) return 0;
   const acq = ymOf(asset.acquiredDate);
   const disp = ymOf(asset.disposedDate);
   if (!acq || !disp || disp.y !== year || disp.y < acq.y) return 0;
@@ -134,7 +178,7 @@ export function disposalResidual(asset: FixedAsset, year: number): number {
 
 /** 除却によりB/Sから外れている(残存簿価を事業主貸へ振替済み)資産か */
 function disposedOut(asset: FixedAsset, year: number): boolean {
-  if (asset.method !== 'straight' || !asset.disposedDate) return false;
+  if (!residualOnDisposal(asset.method) || !asset.disposedDate) return false;
   const acq = ymOf(asset.acquiredDate);
   const disp = ymOf(asset.disposedDate);
   return !!acq && !!disp && disp.y <= year && disp.y >= acq.y;
@@ -198,6 +242,7 @@ export function acquisitionsInYear(assets: FixedAsset[], year: number): FixedAss
 
 export const METHOD_LABELS: Record<FixedAsset['method'], string> = {
   straight: '定額法',
+  declining: '定率法(200%)',
   lump3: '一括償却(3年均等)',
   immediate: '少額特例(全額)',
   deferred: '任意償却(開業費等)',
@@ -256,9 +301,17 @@ export function depreciationTableCsv(assets: FixedAsset[], year: number): string
         a.acquiredDate.slice(0, 7),
         a.cost,
         METHOD_LABELS[a.method],
-        a.method === 'straight' ? a.usefulLife : a.method === 'lump3' ? 3 : '',
-        a.method === 'straight' ? straightLineRate(a.usefulLife).toFixed(3) : '',
-        a.method === 'straight' ? d.months : '',
+        a.method === 'straight' || a.method === 'declining'
+          ? a.usefulLife
+          : a.method === 'lump3'
+            ? 3
+            : '',
+        a.method === 'straight'
+          ? straightLineRate(a.usefulLife).toFixed(3)
+          : a.method === 'declining'
+            ? (declining200For(a.usefulLife).rate1000 / 1000).toFixed(3)
+            : '',
+        a.method === 'straight' || a.method === 'declining' ? d.months : '',
         d.total,
         a.businessRatio,
         d.business,

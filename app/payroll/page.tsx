@@ -6,7 +6,13 @@ import { availableYears } from '@/lib/aggregate';
 import { downloadText } from '@/lib/csv';
 import { dateLabel, today, yen } from '@/lib/format';
 import { buildBalanceSheet } from '@/lib/ledger';
-import { payrollLedgerCsv, SALARY_TABLE_LABELS, salaryWithholding } from '@/lib/payroll';
+import {
+  calcYearEndAdjustment,
+  payrollLedgerCsv,
+  SALARY_TABLE_LABELS,
+  salaryWithholding,
+  withholdingLedgerCsv,
+} from '@/lib/payroll';
 import { salaryWithholdingFor } from '@/lib/taxparams';
 import { useStore } from '@/lib/store';
 import { SalaryTableType } from '@/lib/types';
@@ -377,7 +383,166 @@ export default function PayrollPage() {
             にまとめられます。納付書は「給与所得・退職所得等の所得税徴収高計算書」を使います。
           </p>
         </Card>
+
+        <Card
+          title={`年末調整(源泉徴収簿)── ${year}年分`}
+          action={
+            inYear.length > 0 ? (
+              <button
+                type="button"
+                className={btn.small}
+                onClick={() =>
+                  downloadText(
+                    `源泉徴収簿_${year}.csv`,
+                    withholdingLedgerCsv(store.payrolls, store.yearEndAdjustments, year),
+                    'text/csv',
+                  )
+                }
+              >
+                ⬇ 源泉徴収簿CSV
+              </button>
+            ) : undefined
+          }
+        >
+          {inYear.length === 0 ? (
+            <EmptyState>この年の給与の記帳がまだありません。</EmptyState>
+          ) : (
+            <div className="space-y-4">
+              {[...new Set(inYear.map((p) => p.employee))].map((emp) => (
+                <YearEndCard key={`${year}-${emp}`} employee={emp} year={year} />
+              ))}
+            </div>
+          )}
+          <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
+            <li>
+              対象は<strong>扶養控除等申告書の提出がある(甲欄)従業員</strong>で、給与収入2,000万円以下の人です。
+              乙欄・丙欄のみの人は本人の確定申告で精算します。
+            </li>
+            <li>
+              給与所得控除後の金額は速算式で計算しています。収入660万円未満は所得税法別表第五
+              (4,000円刻みの表)と数百円ずれることがあります。
+            </li>
+            <li>
+              過不足額は12月(または翌年1月)の給与で精算します。還付した額は納付する預り金(源泉所得税)から
+              差し引き、不足を徴収した額は預り金に加えます(精算の仕訳は手動で調整してください)。
+            </li>
+          </ul>
+        </Card>
       </div>
     </>
+  );
+}
+
+/** 従業員1人分の年末調整カード(入力は年×従業員ごとに保存される) */
+function YearEndCard({ employee, year }: { employee: string; year: number }) {
+  const store = useStore();
+  const saved = store.yearEndAdjustments.find((a) => a.year === year && a.employee === employee);
+  const [personal, setPersonal] = useState(String(saved?.personalDeductions ?? 0));
+  const [insurance, setInsurance] = useState(String(saved?.insuranceDeductions ?? 0));
+  const [declared, setDeclared] = useState(String(saved?.declaredSocialInsurance ?? 0));
+  const [savedMsg, setSavedMsg] = useState(false);
+  const num = (s: string) => Math.max(0, Math.round(Number(s)) || 0);
+  const adj = {
+    personalDeductions: num(personal),
+    insuranceDeductions: num(insurance),
+    declaredSocialInsurance: num(declared),
+  };
+  const r = calcYearEndAdjustment(store.payrolls, adj, employee, year);
+
+  const line = (label: string, value: string, strong = false) => (
+    <div className={`flex justify-between gap-4 ${strong ? 'font-semibold' : ''}`}>
+      <span className="text-slate-500">{label}</span>
+      <span className="tabular whitespace-nowrap">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="rounded-lg border border-slate-200 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-semibold">{employee}</h3>
+        <span className="text-xs text-slate-500">
+          年間 総支給 {yen(r.gross)} / 社保天引き {yen(r.withheldSocial)} / 源泉 {yen(r.withheldTax)}
+        </span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div>
+          <label
+            htmlFor={`yea-personal-${employee}`}
+            className="mb-1 block text-xs font-medium text-slate-500"
+            title="扶養控除等(異動)申告書・配偶者控除等申告書から。基礎控除は自動計算"
+          >
+            配偶者・扶養・障害者等の控除額
+          </label>
+          <input
+            id={`yea-personal-${employee}`}
+            type="number"
+            min={0}
+            className={`${input} w-full text-right`}
+            value={personal}
+            onChange={(e) => setPersonal(e.target.value)}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={`yea-insurance-${employee}`}
+            className="mb-1 block text-xs font-medium text-slate-500"
+            title="保険料控除申告書で計算した生命保険料・地震保険料の控除額"
+          >
+            生命保険料・地震保険料等の控除額
+          </label>
+          <input
+            id={`yea-insurance-${employee}`}
+            type="number"
+            min={0}
+            className={`${input} w-full text-right`}
+            value={insurance}
+            onChange={(e) => setInsurance(e.target.value)}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={`yea-declared-${employee}`}
+            className="mb-1 block text-xs font-medium text-slate-500"
+            title="給与天引き以外に本人が支払った国民年金・iDeCoなど(申告書ベース)"
+          >
+            申告された社会保険料・共済掛金
+          </label>
+          <input
+            id={`yea-declared-${employee}`}
+            type="number"
+            min={0}
+            className={`${input} w-full text-right`}
+            value={declared}
+            onChange={(e) => setDeclared(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="mt-3 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
+        {line('給与所得控除後の給与等の金額', yen(r.salaryIncome))}
+        {line('社会保険料等控除額(天引き+申告分)', yen(r.socialTotal))}
+        {line('基礎控除額(自動)', yen(r.basic))}
+        {line('課税給与所得金額(千円未満切捨て)', yen(r.taxable))}
+        {line('年調年税額(算出税額 × 102.1%・百円未満切捨て)', yen(r.annualTax), true)}
+        {line(
+          r.balance >= 0 ? '不足額(従業員から徴収)' : '超過額(従業員へ還付)',
+          yen(Math.abs(r.balance)),
+          true,
+        )}
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          type="button"
+          className={btn.secondary}
+          onClick={() => {
+            store.setYearEndAdjustment({ year, employee, ...adj });
+            setSavedMsg(true);
+            setTimeout(() => setSavedMsg(false), 3000);
+          }}
+        >
+          控除の入力を保存
+        </button>
+        {savedMsg && <span className="text-xs text-emerald-700">保存しました。</span>}
+      </div>
+    </div>
   );
 }

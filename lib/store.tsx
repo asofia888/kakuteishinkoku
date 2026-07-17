@@ -32,6 +32,7 @@ import {
   TaxSettings,
   Transaction,
   uid,
+  YearEndAdjustment,
 } from './types';
 
 const STORAGE_KEY = 'shinkoku-snap:v2';
@@ -61,6 +62,7 @@ interface Store {
   deductions: DeductionEntry[];
   partners: Partner[];
   payrolls: PayrollEntry[];
+  yearEndAdjustments: YearEndAdjustment[];
 
   /** 取引を追加(取込・手入力)。按分は自動で再計算される */
   addTransactions: (
@@ -116,6 +118,8 @@ interface Store {
   registerPayroll: (entry: Omit<PayrollEntry, 'id' | 'createdAt' | 'linkedTxIds'>) => number;
   /** 給与記録を削除(自動起票した取引も一緒に削除する) */
   deletePayroll: (id: string) => void;
+  /** 年末調整の入力を保存(年×従業員ごとに1件。全項目0なら削除) */
+  setYearEndAdjustment: (entry: YearEndAdjustment) => void;
 
   /** 取引先を登録(同名があれば何もしない)。請求書の保存時に自動で呼ばれる */
   ensurePartner: (name: string) => void;
@@ -146,6 +150,7 @@ function emptyData(): AppData {
     deductions: [],
     partners: [],
     payrolls: [],
+    yearEndAdjustments: [],
   };
 }
 
@@ -262,6 +267,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       deductions: data.deductions,
       partners: data.partners,
       payrolls: data.payrolls,
+      yearEndAdjustments: data.yearEndAdjustments,
 
       addTransactions: (txs) =>
         mutate((prev) => ({
@@ -473,6 +479,25 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }));
         return txs.length;
       },
+
+      setYearEndAdjustment: (entry) =>
+        mutate((prev) => {
+          const rest = prev.yearEndAdjustments.filter(
+            (a) => !(a.year === entry.year && a.employee === entry.employee),
+          );
+          const isEmpty =
+            entry.personalDeductions === 0 &&
+            entry.insuranceDeductions === 0 &&
+            entry.declaredSocialInsurance === 0;
+          return {
+            ...prev,
+            yearEndAdjustments: isEmpty
+              ? rest
+              : [...rest, entry].sort(
+                  (a, b) => a.year - b.year || a.employee.localeCompare(b.employee),
+                ),
+          };
+        }),
 
       deletePayroll: (id) =>
         mutate((prev) => {

@@ -275,6 +275,7 @@ export function buildDemoData(): AppData {
     inventories: [],
     deductions: [],
     payrolls: [],
+    yearEndAdjustments: [],
     partners: [
       {
         id: uid(),

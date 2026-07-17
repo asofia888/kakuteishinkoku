@@ -78,6 +78,15 @@ const goodData: AppData = {
   inventories: [{ year: 2026, amount: 120000 }],
   deductions: [],
   payrolls: [],
+  yearEndAdjustments: [
+    {
+      year: 2026,
+      employee: '佐藤',
+      personalDeductions: 380000,
+      insuranceDeductions: 40000,
+      declaredSocialInsurance: 0,
+    },
+  ],
   partners: [
     { id: 'p1', name: '株式会社ABC', invoiceRegNumber: 'T9999999999999', memo: '', createdAt: 4000 },
   ],

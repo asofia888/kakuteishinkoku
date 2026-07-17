@@ -182,7 +182,7 @@ export const DEFAULT_ISSUER: IssuerProfile = {
  * - immediate: 少額減価償却資産の特例(青色申告・30万円未満・年合計300万円まで。全額その年の経費)
  * - deferred: 繰延資産(開業費・開発費など)。任意償却で、年ごとの償却額を自由に決められる
  */
-export type DepreciationMethod = 'straight' | 'lump3' | 'immediate' | 'deferred';
+export type DepreciationMethod = 'straight' | 'declining' | 'lump3' | 'immediate' | 'deferred';
 
 /** 固定資産(減価償却資産)台帳の1件 */
 export interface FixedAsset {
@@ -241,6 +241,18 @@ export interface PayrollEntry {
   /** 自動起票した取引ID(手取りの支払い・源泉・社会保険料等の預り) */
   linkedTxIds?: string[];
   createdAt: number;
+}
+
+/** 年末調整の入力(年 × 従業員ごとに1件)。給与以外の控除は本人の申告書から転記する */
+export interface YearEndAdjustment {
+  year: number;
+  employee: string;
+  /** 配偶者控除・扶養控除・障害者控除など人的控除の合計(基礎控除は自動計算) */
+  personalDeductions: number;
+  /** 生命保険料控除・地震保険料控除の合計(保険料控除申告書の控除額) */
+  insuranceDeductions: number;
+  /** 給与天引き以外に本人が申告した社会保険料・小規模企業共済等掛金 */
+  declaredSocialInsurance: number;
 }
 
 /** 取引先(請求書の宛先など)。請求書の保存時に自動登録される */
@@ -323,6 +335,8 @@ export interface AppData {
   partners: Partner[];
   /** 給与の支払い記録(賃金台帳) */
   payrolls: PayrollEntry[];
+  /** 年末調整の入力(年 × 従業員ごとに1件) */
+  yearEndAdjustments: YearEndAdjustment[];
 }
 
 export function uid(): string {

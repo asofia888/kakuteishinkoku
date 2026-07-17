@@ -1,6 +1,7 @@
 import { escapeFormulaCell } from './csv';
+import { basicDeduction, incomeTaxBase } from './incometax';
 import { salaryWithholdingFor } from './taxparams';
-import { PayrollEntry, Transaction } from './types';
+import { PayrollEntry, Transaction, YearEndAdjustment } from './types';
 
 /**
  * 給与(バイト代など)の記帳支援。
@@ -88,8 +89,146 @@ export function buildPayrollTransactions(
   return drafts;
 }
 
+// ── 年末調整(源泉徴収簿) ──────────────────────────────
+
+/**
+ * 給与所得控除後の給与等の金額(速算式による概算)。
+ * 令和7年分(2025年)以降は最低保障が65万円(令和7年度改正)。
+ * 実際の年末調整では収入660万円未満は所得税法別表第五(4,000円刻みの表)を
+ * 使うため、数百円ずれることがある。
+ */
+export function salaryIncomeAfterDeduction(gross: number, year: number): number {
+  if (gross <= 0) return 0;
+  const floor = year >= 2025 ? 650_000 : 550_000;
+  let deduction: number;
+  if (gross <= 1_800_000) deduction = Math.floor(gross * 0.4) - 100_000;
+  else if (gross <= 3_600_000) deduction = Math.floor(gross * 0.3) + 80_000;
+  else if (gross <= 6_600_000) deduction = Math.floor(gross * 0.2) + 440_000;
+  else if (gross <= 8_500_000) deduction = Math.floor(gross * 0.1) + 1_100_000;
+  else deduction = 1_950_000;
+  return Math.max(0, gross - Math.max(floor, deduction));
+}
+
+/** 年末調整の計算結果(源泉徴収簿の右側の欄) */
+export interface YearEndResult {
+  year: number;
+  employee: string;
+  /** 年間の総支給額 */
+  gross: number;
+  /** 給与から天引きした社会保険料等の合計 */
+  withheldSocial: number;
+  /** 源泉徴収税額の合計 */
+  withheldTax: number;
+  /** 給与所得控除後の給与等の金額 */
+  salaryIncome: number;
+  /** 社会保険料等の控除計(天引き + 本人申告分) */
+  socialTotal: number;
+  /** 基礎控除(合計所得と年分で判定) */
+  basic: number;
+  /** 所得控除の合計 */
+  totalDeductions: number;
+  /** 課税給与所得金額(1,000円未満切捨て) */
+  taxable: number;
+  /** 算出所得税額(速算表) */
+  incomeTax: number;
+  /** 年調年税額(算出税額 × 102.1% → 100円未満切捨て) */
+  annualTax: number;
+  /** 過不足額(年調年税額 − 源泉徴収税額計。マイナス = 従業員へ還付) */
+  balance: number;
+}
+
+/** 指定年・従業員の年末調整を計算する(給与所得のみの前提) */
+export function calcYearEndAdjustment(
+  payrolls: PayrollEntry[],
+  adj: Pick<
+    YearEndAdjustment,
+    'personalDeductions' | 'insuranceDeductions' | 'declaredSocialInsurance'
+  >,
+  employee: string,
+  year: number,
+): YearEndResult {
+  const rows = payrolls.filter((p) => p.employee === employee && p.date.startsWith(`${year}-`));
+  const gross = rows.reduce((s, p) => s + p.gross, 0);
+  const withheldSocial = rows.reduce((s, p) => s + (p.socialInsurance ?? 0), 0);
+  const withheldTax = rows.reduce((s, p) => s + p.withholding, 0);
+  const salaryIncome = salaryIncomeAfterDeduction(gross, year);
+  const socialTotal = withheldSocial + adj.declaredSocialInsurance;
+  // 合計所得金額 = 給与所得のみの前提(他の所得は本人の確定申告で精算)
+  const basic = basicDeduction(salaryIncome, year);
+  const totalDeductions =
+    socialTotal + adj.insuranceDeductions + adj.personalDeductions + basic;
+  const taxable = Math.floor(Math.max(0, salaryIncome - totalDeductions) / 1000) * 1000;
+  const incomeTax = incomeTaxBase(taxable, year);
+  // 年調年税額 = 算出所得税額 × 102.1%(復興特別所得税込み)→ 100円未満切捨て
+  const annualTax = Math.floor((incomeTax * 1021) / 100_000) * 100;
+  return {
+    year,
+    employee,
+    gross,
+    withheldSocial,
+    withheldTax,
+    salaryIncome,
+    socialTotal,
+    basic,
+    totalDeductions,
+    taxable,
+    incomeTax,
+    annualTax,
+    balance: annualTax - withheldTax,
+  };
+}
+
 function csvCell(s: string): string {
   return `"${escapeFormulaCell(s).replace(/"/g, '""')}"`;
+}
+
+/** 源泉徴収簿CSV(従業員別の月別内訳 + 年末調整欄) */
+export function withholdingLedgerCsv(
+  payrolls: PayrollEntry[],
+  adjustments: YearEndAdjustment[],
+  year: number,
+): string {
+  const lines: string[] = [];
+  lines.push(`"${year}年分 給与所得に対する源泉徴収簿(申告スナップ)"`);
+  lines.push(
+    '※速算式による計算のため、別表第五(660万円未満の所得金額の表)とは数百円ずれることがあります',
+  );
+  const inYear = payrolls
+    .filter((p) => p.date.startsWith(`${year}-`))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const employees = [...new Set(inYear.map((p) => p.employee))];
+  for (const emp of employees) {
+    const adj = adjustments.find((a) => a.year === year && a.employee === emp) ?? {
+      personalDeductions: 0,
+      insuranceDeductions: 0,
+      declaredSocialInsurance: 0,
+    };
+    const r = calcYearEndAdjustment(payrolls, adj, emp, year);
+    lines.push('');
+    lines.push(`従業員,${csvCell(emp)}`);
+    lines.push('支払日,総支給額,社会保険料等,社保控除後,算出税額(源泉),税額区分');
+    for (const p of inYear.filter((x) => x.employee === emp)) {
+      const si = p.socialInsurance ?? 0;
+      lines.push(
+        [p.date, p.gross, si, p.gross - si, p.withholding, SALARY_TABLE_LABELS[p.table]].join(','),
+      );
+    }
+    lines.push(`年間合計,${r.gross},${r.withheldSocial},${r.gross - r.withheldSocial},${r.withheldTax},`);
+    lines.push('── 年末調整 ──');
+    lines.push(`給与所得控除後の給与等の金額,${r.salaryIncome}`);
+    lines.push(`社会保険料等控除額(天引き+申告分),${r.socialTotal}`);
+    lines.push(`生命保険料・地震保険料等の控除額,${adj.insuranceDeductions}`);
+    lines.push(`配偶者・扶養・障害者等の控除額,${adj.personalDeductions}`);
+    lines.push(`基礎控除額,${r.basic}`);
+    lines.push(`課税給与所得金額(1000円未満切捨),${r.taxable}`);
+    lines.push(`算出所得税額,${r.incomeTax}`);
+    lines.push(`年調年税額(×102.1%・100円未満切捨),${r.annualTax}`);
+    lines.push(`源泉徴収税額の合計,${r.withheldTax}`);
+    lines.push(
+      r.balance >= 0 ? `不足額(徴収する額),${r.balance}` : `超過額(還付する額),${-r.balance}`,
+    );
+  }
+  return '﻿' + lines.join('\r\n');
 }
 
 /** 賃金台帳CSV(従業員別・支払日順)。労働日数・時間は別途記録が必要 */

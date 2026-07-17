@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { entryForTransaction } from './ledger';
-import { buildPayrollTransactions, payrollLedgerCsv, salaryWithholding } from './payroll';
+import {
+  buildPayrollTransactions,
+  calcYearEndAdjustment,
+  payrollLedgerCsv,
+  salaryIncomeAfterDeduction,
+  salaryWithholding,
+  withholdingLedgerCsv,
+} from './payroll';
 import { PayrollEntry, Transaction } from './types';
 
 describe('salaryWithholding: 源泉徴収の簡易判定(社会保険料等控除後・支払年分の税額表)', () => {
@@ -120,5 +127,94 @@ describe('payrollLedgerCsv: 賃金台帳', () => {
     expect(csv).toContain('年間合計,,160000,480,0,159520,');
     expect(csv.indexOf('2026-01-25')).toBeLessThan(csv.indexOf('2026-02-25'));
     expect(csv).not.toContain('2025-12-25');
+  });
+});
+
+describe('salaryIncomeAfterDeduction: 給与所得控除後の金額(速算式)', () => {
+  it('2025年分以降は最低保障65万円(令和7年度改正)', () => {
+    expect(salaryIncomeAfterDeduction(1_000_000, 2026)).toBe(350_000); // 100万 − 65万
+    expect(salaryIncomeAfterDeduction(500_000, 2026)).toBe(0); // 控除が収入を上回る
+    expect(salaryIncomeAfterDeduction(1_000_000, 2024)).toBe(450_000); // 旧: 55万
+  });
+
+  it('速算式の各段階(30%+8万 / 20%+44万 / 10%+110万 / 上限195万)', () => {
+    expect(salaryIncomeAfterDeduction(3_000_000, 2026)).toBe(2_020_000); // −(90万+8万)
+    expect(salaryIncomeAfterDeduction(5_000_000, 2026)).toBe(3_560_000); // −(100万+44万)
+    expect(salaryIncomeAfterDeduction(7_000_000, 2026)).toBe(5_200_000); // −(70万+110万)
+    expect(salaryIncomeAfterDeduction(10_000_000, 2026)).toBe(8_050_000); // −195万
+  });
+});
+
+describe('calcYearEndAdjustment: 年末調整', () => {
+  const monthly = (m: number): PayrollEntry => ({
+    id: `ye-${m}`,
+    employee: '佐藤',
+    date: `2026-${String(m).padStart(2, '0')}-25`,
+    gross: 250_000,
+    withholding: 5_000,
+    socialInsurance: 37_500,
+    table: 'kou',
+    createdAt: m,
+  });
+  const rows = Array.from({ length: 12 }, (_, i) => monthly(i + 1));
+
+  it('総支給300万・社保45万・源泉6万 → 年調年税額35,200円・還付24,800円', () => {
+    // 給与所得控除後 202万 → 基礎控除88万(2026年・時限上乗せ) → 課税69万
+    // 算出税額 34,500 → ×102.1% = 35,224.5 → 100円未満切捨 35,200
+    const r = calcYearEndAdjustment(
+      rows,
+      { personalDeductions: 0, insuranceDeductions: 0, declaredSocialInsurance: 0 },
+      '佐藤',
+      2026,
+    );
+    expect(r.gross).toBe(3_000_000);
+    expect(r.withheldSocial).toBe(450_000);
+    expect(r.withheldTax).toBe(60_000);
+    expect(r.salaryIncome).toBe(2_020_000);
+    expect(r.basic).toBe(880_000);
+    expect(r.taxable).toBe(690_000);
+    expect(r.incomeTax).toBe(34_500);
+    expect(r.annualTax).toBe(35_200);
+    expect(r.balance).toBe(-24_800); // 従業員へ還付
+  });
+
+  it('扶養控除・保険料控除・申告社保を差し引き、他の従業員・他年の給与は混ざらない', () => {
+    const noise: PayrollEntry[] = [
+      { ...monthly(1), id: 'x1', employee: '鈴木' },
+      { ...monthly(2), id: 'x2', date: '2025-06-25' },
+    ];
+    const r = calcYearEndAdjustment(
+      [...rows, ...noise],
+      { personalDeductions: 380_000, insuranceDeductions: 40_000, declaredSocialInsurance: 100_000 },
+      '佐藤',
+      2026,
+    );
+    expect(r.gross).toBe(3_000_000);
+    expect(r.socialTotal).toBe(550_000);
+    // 課税所得 = 202万 − (55万+4万+38万+88万) = 17万 → 税 8,500 → ×1.021 = 8,678.5 → 8,600
+    expect(r.taxable).toBe(170_000);
+    expect(r.annualTax).toBe(8_600);
+  });
+
+  it('源泉徴収簿CSVに月別内訳と年末調整欄が入る', () => {
+    const csv = withholdingLedgerCsv(
+      rows,
+      [
+        {
+          year: 2026,
+          employee: '佐藤',
+          personalDeductions: 0,
+          insuranceDeductions: 0,
+          declaredSocialInsurance: 0,
+        },
+      ],
+      2026,
+    );
+    expect(csv).toContain('源泉徴収簿');
+    expect(csv).toContain('2026-01-25,250000,37500,212500,5000');
+    expect(csv).toContain('年間合計,3000000,450000,2550000,60000');
+    expect(csv).toContain('給与所得控除後の給与等の金額,2020000');
+    expect(csv).toContain('年調年税額(×102.1%・100円未満切捨),35200');
+    expect(csv).toContain('超過額(還付する額),24800');
   });
 });

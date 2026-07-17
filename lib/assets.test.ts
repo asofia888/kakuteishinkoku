@@ -218,3 +218,70 @@ describe('繰延資産(開業費)の任意償却', () => {
     expect(rows[1].closing).toBe(0);
   });
 });
+
+describe('定率法(200%定率法・平成24年4月以後取得)', () => {
+  it('国税庁の計算例と一致する(1,000,000円・10年・1月取得)', () => {
+    // 償却率0.200・改定償却率0.250・保証率0.06552(償却保証額 65,520円)。
+    // 7年目に調整前償却額 52,428 < 65,520 となり、改定取得価額262,144×0.250へ切替
+    const a = asset({
+      method: 'declining',
+      cost: 1_000_000,
+      usefulLife: 10,
+      acquiredDate: '2020-01-15',
+    });
+    const rows = depreciationSchedule(a);
+    expect(rows.map((r) => r.dep)).toEqual([
+      200_000, 160_000, 128_000, 102_400, 81_920, 65_536, 65_536, 65_536, 65_536, 65_535,
+    ]);
+    expect(rows[rows.length - 1].closing).toBe(1); // 備忘価額
+    expect(rows[6].opening).toBe(262_144); // 切替年の期首=改定取得価額
+  });
+
+  it('年の途中取得は初年のみ月割りになる(10月取得 → 3/12)', () => {
+    const a = asset({
+      method: 'declining',
+      cost: 1_000_000,
+      usefulLife: 10,
+      acquiredDate: '2020-10-01',
+    });
+    const rows = depreciationSchedule(a);
+    expect(rows[0].dep).toBe(50_000); // 200,000 × 3/12
+    expect(rows[1].dep).toBe(190_000); // (1,000,000−50,000) × 0.200
+  });
+
+  it('全耐用年数(2〜50年)で耐用年数どおりに1円まで償却しきる(係数表の検証)', () => {
+    // 保証率・改定償却率は「切替により耐用年数で1円まで償却が終わる」よう設計されている。
+    // 転記ミスがあるとこの性質が壊れるため、全年数でスケジュールを回して検証する
+    for (let n = 2; n <= 50; n++) {
+      const a = asset({
+        method: 'declining',
+        cost: 1_000_000,
+        usefulLife: n,
+        acquiredDate: '2000-01-01',
+      });
+      const rows = depreciationSchedule(a);
+      const expectYears = n === 2 ? 1 : n; // 2年は償却率1.000で初年に全額
+      expect(rows.length, `耐用年数${n}年`).toBe(expectYears);
+      expect(rows[rows.length - 1].closing, `耐用年数${n}年の最終簿価`).toBe(1);
+      expect(rows.reduce((s, r) => s + r.dep, 0), `耐用年数${n}年の償却累計`).toBe(999_999);
+    }
+  });
+
+  it('除却すると償却が止まり、残存簿価が事業主貸へ振り替えられる', () => {
+    const a = asset({
+      method: 'declining',
+      cost: 1_000_000,
+      usefulLife: 10,
+      acquiredDate: '2020-01-15',
+      disposedDate: '2022-06-30',
+    });
+    const rows = depreciationSchedule(a);
+    // 2022年は6月まで(6/12): 128,000 × 6/12 = 64,000
+    expect(rows[2]).toMatchObject({ year: 2022, months: 6, dep: 64_000 });
+    expect(rows).toHaveLength(3);
+    // 残存簿価 1,000,000 − 200,000 − 160,000 − 64,000 = 576,000 を除却年に振替
+    expect(disposalResidual(a, 2022)).toBe(576_000);
+    expect(bookValueAtEnd(a, 2022)).toBe(0);
+    expect(bookValueAtStart(a, 2023)).toBe(0);
+  });
+});

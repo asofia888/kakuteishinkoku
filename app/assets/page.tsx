@@ -16,7 +16,7 @@ import {
   yearDepreciationTotals,
 } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
-import { SMALL_ASSET } from '@/lib/taxparams';
+import { declining200For, SMALL_ASSET } from '@/lib/taxparams';
 import { dateLabel, today, yen } from '@/lib/format';
 import { useStore } from '@/lib/store';
 import { DepreciationMethod, FixedAsset } from '@/lib/types';
@@ -86,7 +86,11 @@ export default function AssetsPage() {
   const shokyakuShisanCost = useMemo(
     () =>
       store.assets
-        .filter((a) => (a.method === 'straight' || a.method === 'immediate') && !a.disposedDate)
+        .filter(
+          (a) =>
+            (a.method === 'straight' || a.method === 'declining' || a.method === 'immediate') &&
+            !a.disposedDate,
+        )
         .reduce((s, a) => s + a.cost, 0),
     [store.assets],
   );
@@ -264,9 +268,18 @@ export default function AssetsPage() {
                               率{straightLineRate(a.usefulLife).toFixed(3)}
                             </span>
                           )}
+                          {a.method === 'declining' && (
+                            <span className="ml-1 text-[10px] text-slate-500">
+                              率{(declining200For(a.usefulLife).rate1000 / 1000).toFixed(3)}
+                            </span>
+                          )}
                         </td>
                         <td className="tabular px-2 py-2 text-right">
-                          {a.method === 'straight' ? `${a.usefulLife}年` : a.method === 'lump3' ? '3年' : '—'}
+                          {a.method === 'straight' || a.method === 'declining'
+                            ? `${a.usefulLife}年`
+                            : a.method === 'lump3'
+                              ? '3年'
+                              : '—'}
                         </td>
                         <td className="tabular px-2 py-2 text-right">{a.businessRatio}%</td>
                         <td className="tabular px-2 py-2 text-right">
@@ -420,23 +433,33 @@ function AssetForm({
             onChange={(e) => set({ method: e.target.value as DepreciationMethod })}
           >
             <option value="straight">定額法(原則)</option>
+            <option value="declining">定率法(200%・要届出)</option>
             <option value="lump3">一括償却(3年均等・10〜20万円未満)</option>
             <option value="immediate">少額特例(全額その年の経費・30万円未満)</option>
             <option value="deferred">開業費・繰延資産(任意償却)</option>
           </select>
+          {draft.method === 'declining' && (
+            <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+              個人は定額法が法定のため、定率法は税務署へ「減価償却資産の償却方法の届出書」の提出が必要です。
+              平成24年4月1日以後取得(200%定率法)を前提に計算します。
+            </p>
+          )}
         </div>
-        {draft.method === 'straight' && (
+        {(draft.method === 'straight' || draft.method === 'declining') && (
           <div>
             <label htmlFor="asset-useful-life" className="mb-1 block text-xs font-medium text-slate-500">
               耐用年数(償却率{' '}
-              {straightLineRate(Math.min(100, Math.max(2, draft.usefulLife || 2))).toFixed(3)})
+              {draft.method === 'straight'
+                ? straightLineRate(Math.min(100, Math.max(2, draft.usefulLife || 2))).toFixed(3)
+                : (declining200For(draft.usefulLife || 2).rate1000 / 1000).toFixed(3)}
+              )
             </label>
             <div className="flex gap-2">
               <input
                 id="asset-useful-life"
                 type="number"
                 min={2}
-                max={100}
+                max={draft.method === 'declining' ? 50 : 100}
                 className={`${input} w-20 text-right`}
                 value={draft.usefulLife}
                 onChange={(e) => set({ usefulLife: Number(e.target.value) })}
@@ -629,7 +652,9 @@ function ScheduleModal({ asset, onClose }: { asset: FixedAsset; onClose: () => v
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-800">
             償却予定表 ── {asset.name}({METHOD_LABELS[asset.method]}
-            {asset.method === 'straight' ? `・${asset.usefulLife}年` : ''})
+            {asset.method === 'straight' || asset.method === 'declining'
+              ? `・${asset.usefulLife}年`
+              : ''})
           </h2>
           <button type="button" className={btn.secondary} onClick={onClose}>
             閉じる
