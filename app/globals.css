@@ -37,4 +37,28 @@ body {
     border-radius: 0;
     box-shadow: none;
   }
+
+  /* 決算書・申告書の様式イメージ印刷(転記ガイドの「様式イメージ」プレビュー) */
+  body:has(.filing-sheet) * {
+    visibility: hidden;
+  }
+  body:has(.filing-sheet) .filing-sheet,
+  body:has(.filing-sheet) .filing-sheet * {
+    visibility: visible;
+  }
+  .filing-sheet {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+  /* 1様式=1ページで改ページする */
+  .filing-page {
+    break-after: page;
+  }
 }
