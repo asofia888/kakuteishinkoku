@@ -2,7 +2,7 @@
 // 方針: ページ遷移(HTML)はネットワーク優先(更新を確実に反映)、
 // 静的アセットは stale-while-revalidate(表示は速く・裏で更新)。
 // バージョンはリリース時に上げる(古いキャッシュは activate で破棄される)。
-const VERSION = 'v3.6.2';
+const VERSION = 'v3.7.0';
 const CACHE = `shinkoku-snap-${VERSION}`;
 
 self.addEventListener('install', () => {
