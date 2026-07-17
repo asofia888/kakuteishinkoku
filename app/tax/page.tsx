@@ -6,6 +6,7 @@ import { availableYears } from '@/lib/aggregate';
 import { yen } from '@/lib/format';
 import { useStore } from '@/lib/store';
 import {
+  calcTaxReturn,
   DEEMED_PURCHASE_RATES,
   SIMPLIFIED_TYPES,
   summarizeTax,
@@ -43,6 +44,11 @@ export default function TaxPage() {
   const settings = store.taxSettings;
   const summary = useMemo(
     () => summarizeTax(store.transactions, year, settings),
+    [store.transactions, year, settings],
+  );
+  // 申告書様式(割戻し計算・国税/地方分離・法定の端数処理)での計算
+  const taxReturn = useMemo(
+    () => calcTaxReturn(store.transactions, year, settings),
     [store.transactions, year, settings],
   );
 
@@ -258,7 +264,8 @@ export default function TaxPage() {
           <ul className="mt-4 list-disc space-y-1.5 pl-5 text-xs leading-relaxed text-slate-500">
             <li>
               帳簿は<strong>税込経理方式</strong>を前提に、税込金額から消費税額を割り戻した
-              <strong>概算</strong>です。実際の申告書は国税(7.8%/6.24%)と地方消費税を分けて計算するため、金額が数百円単位でずれることがあります。
+              <strong>概算</strong>です。申告書の様式どおり(国税7.8%/6.24%と地方消費税の分離・法定の端数処理)の金額は、下の
+              <strong>「申告書ベースの計算」</strong>をご覧ください。
             </li>
             <li>
               <strong>2割特例</strong>は、インボイス登録がなければ免税事業者だった小規模事業者(基準期間の課税売上高1,000万円以下など)が対象です(2026年9月30日を含む課税期間まで)。
@@ -272,6 +279,79 @@ export default function TaxPage() {
               のため、該当する地代家賃の取引は税区分を「非課税」に変更してください(事務所・コワーキングは課税のままで構いません)。
             </li>
             <li>納付見込みには所得税・住民税は含まれません。最終判断は税理士等にご確認ください。</li>
+          </ul>
+        </Card>
+
+        <Card
+          title={`申告書ベースの計算(${year}年分・${
+            taxReturn.applied === 'general'
+              ? '本則課税'
+              : taxReturn.applied === 'simplified'
+                ? `簡易課税 第${settings.simplifiedType}種`
+                : '2割特例'
+          }・割戻し計算)`}
+        >
+          <p className="mb-3 text-xs leading-relaxed text-slate-500">
+            消費税及び地方消費税の確定申告書(一般用/簡易課税用)の計算順に、法定の端数処理で計算した金額です。
+            上の試算(10%割り戻しの概算)と数百円〜数千円ずれるのは端数処理と国税/地方の分離によるものです。
+          </p>
+          <table className="w-full max-w-2xl text-sm">
+            <tbody>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 pr-2">課税標準額(千円未満切捨て)</td>
+                <td className="tabular px-2 py-1.5 text-right">{yen(taxReturn.baseTotal)}</td>
+                <td className="py-1.5 pl-2 text-xs text-slate-500">
+                  10%分: {yen(taxReturn.base10)}
+                  {taxReturn.base8 > 0 ? ` / 軽減8%分: ${yen(taxReturn.base8)}` : ''}
+                </td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 pr-2">消費税額(国税 7.8%・6.24%)</td>
+                <td className="tabular px-2 py-1.5 text-right">{yen(taxReturn.salesTaxNational)}</td>
+                <td className="py-1.5 pl-2 text-xs text-slate-500">
+                  10%分: {yen(taxReturn.tax10)}
+                  {taxReturn.tax8 > 0 ? ` / 軽減8%分: ${yen(taxReturn.tax8)}` : ''}
+                </td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 pr-2">控除対象仕入税額(国税)</td>
+                <td className="tabular px-2 py-1.5 text-right">{yen(taxReturn.deductibleNational)}</td>
+                <td className="py-1.5 pl-2 text-xs text-slate-500">
+                  {taxReturn.applied === 'general'
+                    ? '適格分は全額・適格なしは経過措置80%/50%'
+                    : taxReturn.applied === 'simplified'
+                      ? `売上の消費税 × みなし仕入率${DEEMED_PURCHASE_RATES[settings.simplifiedType]}%`
+                      : '特別控除(売上の消費税 × 80%)'}
+                </td>
+              </tr>
+              <tr className="border-b border-slate-100 font-medium">
+                <td className="py-1.5 pr-2">
+                  {taxReturn.netNational >= 0 ? '差引税額(百円未満切捨て)' : '控除不足還付税額'}
+                </td>
+                <td className="tabular px-2 py-1.5 text-right">
+                  {taxReturn.netNational >= 0
+                    ? yen(taxReturn.netNational)
+                    : `還付 ${yen(-taxReturn.netNational)}`}
+                </td>
+                <td className="py-1.5 pl-2 text-xs font-normal text-slate-500">消費税(国税)の納付額</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1.5 pr-2">地方消費税(譲渡割額)</td>
+                <td className="tabular px-2 py-1.5 text-right">
+                  {taxReturn.localTax >= 0 ? yen(taxReturn.localTax) : `還付 ${yen(-taxReturn.localTax)}`}
+                </td>
+                <td className="py-1.5 pl-2 text-xs text-slate-500">差引税額 × 22/78(百円未満切捨て)</td>
+              </tr>
+              <tr className="bg-slate-50 font-semibold">
+                <td className="py-2 pr-2">消費税及び地方消費税の合計{taxReturn.totalDue >= 0 ? '(納付)' : '(還付)'}</td>
+                <td className="tabular px-2 py-2 text-right">{yen(Math.abs(taxReturn.totalDue))}</td>
+                <td className="py-2 pl-2 text-xs font-normal text-slate-500">申告書に転記する最終額の目安</td>
+              </tr>
+            </tbody>
+          </table>
+          <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
+            <li>税込経理・<strong>割戻し計算</strong>(総額計算)前提です。適格請求書の税額を1枚ずつ積み上げる「積上げ計算」を選んでいる場合は一致しません。</li>
+            <li>売上対価の返還等・貸倒れ・中間納付額・簡易課税の複数事業区分には対応していません。該当がある場合は申告書上で調整してください。</li>
           </ul>
         </Card>
       </div>
