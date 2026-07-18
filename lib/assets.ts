@@ -270,6 +270,91 @@ function csvCell(s: string): string {
   return `"${escapeFormulaCell(s).replace(/"/g, '""')}"`;
 }
 
+/**
+ * 決算書「減価償却費の計算」欄の1行分。
+ * CSV出力・e-Tax(帳票KOA210)出力・画面表示はこの行データを共用する
+ * (方法ラベル・償却率・保証額・摘要の決定ロジックを1箇所にまとめる)。
+ */
+export interface DepreciationYearRow {
+  methodId: FixedAsset['method'];
+  name: string;
+  /** 取得年月 YYYY-MM */
+  acquired: string;
+  cost: number;
+  /** 償却保証額(定率法のみ) */
+  guarantee: number | null;
+  /** 償却の基礎になる金額(定率法は期首帳簿価額) */
+  base: number;
+  /** 償却方法の表示名 */
+  method: string;
+  usefulLife: number | null;
+  /** 償却率の表示(0.250 など)。一括償却・少額特例・任意償却は null */
+  rate: string | null;
+  /** 本年中の償却期間(月) */
+  months: number;
+  /** 本年分の普通償却費(全額) */
+  dep: number;
+  businessRatio: number;
+  /** 本年分の必要経費算入額 */
+  business: number;
+  /** 未償却残高(期末) */
+  closing: number;
+  /** 摘要(措法28の2・除却など) */
+  note: string;
+  /** 除却年に事業主貸へ振り替えた残存簿価(表示用) */
+  residual: number;
+}
+
+/** 指定年に償却費のある資産を、決算書3ページ目の様式の列に展開する */
+export function depreciationRowsForYear(assets: FixedAsset[], year: number): DepreciationYearRow[] {
+  const rows: DepreciationYearRow[] = [];
+  for (const a of assets) {
+    const d = depreciationForYear(a, year);
+    if (d.total === 0) continue;
+    rows.push({
+      methodId: a.method,
+      name: a.name,
+      acquired: a.acquiredDate.slice(0, 7),
+      cost: a.cost,
+      guarantee:
+        a.method === 'declining'
+          ? Math.floor((a.cost * declining200For(a.usefulLife).guarantee100000) / 100_000)
+          : null,
+      base: a.method === 'declining' ? bookValueAtStart(a, year) : a.cost,
+      method: METHOD_LABELS[a.method],
+      usefulLife:
+        a.method === 'straight' || a.method === 'declining'
+          ? a.usefulLife
+          : a.method === 'lump3'
+            ? 3
+            : null,
+      rate:
+        a.method === 'straight'
+          ? straightLineRate(a.usefulLife).toFixed(3)
+          : a.method === 'declining'
+            ? (declining200For(a.usefulLife).rate1000 / 1000).toFixed(3)
+            : null,
+      months: d.months || 12,
+      dep: d.total,
+      businessRatio: a.businessRatio,
+      business: d.business,
+      closing: bookValueAtEnd(a, year),
+      note:
+        a.method === 'immediate'
+          ? '措法28の2(少額)'
+          : a.method === 'lump3'
+            ? '一括償却(3年)'
+            : a.method === 'deferred'
+              ? '繰延資産・任意償却'
+              : a.disposedDate && a.disposedDate.slice(0, 4) === String(year)
+                ? `除却 ${a.disposedDate}`
+                : '',
+      residual: disposalResidual(a, year),
+    });
+  }
+  return rows;
+}
+
 /** 青色申告決算書「減価償却費の計算」欄に転記できるCSV(指定年に償却がある資産のみ) */
 export function depreciationTableCsv(assets: FixedAsset[], year: number): string {
   const lines: string[] = [];
@@ -277,49 +362,27 @@ export function depreciationTableCsv(assets: FixedAsset[], year: number): string
   lines.push(
     '減価償却資産の名称等,取得年月,取得価額,償却方法,耐用年数,償却率,本年中の償却期間(月),本年分の普通償却費,事業専用割合(%),本年分の必要経費算入額,未償却残高(期末),摘要',
   );
-  let totalDep = 0;
-  let totalBusiness = 0;
-  for (const a of assets) {
-    const d = depreciationForYear(a, year);
-    if (d.total === 0) continue;
-    totalDep += d.total;
-    totalBusiness += d.business;
-    const residual = disposalResidual(a, year);
-    const note =
-      a.method === 'immediate'
-        ? '措法28の2(少額)'
-        : a.method === 'lump3'
-          ? '一括償却(3年)'
-          : a.method === 'deferred'
-            ? '繰延資産・任意償却'
-            : a.disposedDate && a.disposedDate.slice(0, 4) === String(year)
-              ? `除却 ${a.disposedDate}${residual > 0 ? `(残存簿価${residual}円は事業主貸へ振替)` : ''}`
-              : '';
+  const rows = depreciationRowsForYear(assets, year);
+  for (const r of rows) {
     lines.push(
       [
-        csvCell(a.name),
-        a.acquiredDate.slice(0, 7),
-        a.cost,
-        METHOD_LABELS[a.method],
-        a.method === 'straight' || a.method === 'declining'
-          ? a.usefulLife
-          : a.method === 'lump3'
-            ? 3
-            : '',
-        a.method === 'straight'
-          ? straightLineRate(a.usefulLife).toFixed(3)
-          : a.method === 'declining'
-            ? (declining200For(a.usefulLife).rate1000 / 1000).toFixed(3)
-            : '',
-        a.method === 'straight' || a.method === 'declining' ? d.months : '',
-        d.total,
-        a.businessRatio,
-        d.business,
-        bookValueAtEnd(a, year),
-        csvCell(note),
+        csvCell(r.name),
+        r.acquired,
+        r.cost,
+        r.method,
+        r.usefulLife ?? '',
+        r.rate ?? '',
+        r.methodId === 'straight' || r.methodId === 'declining' ? r.months : '',
+        r.dep,
+        r.businessRatio,
+        r.business,
+        r.closing,
+        csvCell(r.residual > 0 ? `${r.note}(残存簿価${r.residual}円は事業主貸へ振替)` : r.note),
       ].join(','),
     );
   }
+  const totalDep = rows.reduce((s, r) => s + r.dep, 0);
+  const totalBusiness = rows.reduce((s, r) => s + r.business, 0);
   lines.push(`合計,,,,,,,${totalDep},,${totalBusiness},,`);
   return '\ufeff' + lines.join('\r\n');
 }

@@ -31,11 +31,12 @@ function fixture(): KessanshoInput {
       inventoryClosing: 0,
       costOfSales: 0,
       grossProfit: 5_068_000,
-      fixed: {
-        taxes_dues: 0, shipping: 0, utilities: 55_680, travel: 0, communication: 47_364,
-        advertising: 0, entertainment: 0, insurance: 0, repairs: 0, supplies: 72_000,
-        depreciation: 110_000, welfare: 0, salaries: 0, outsourcing: 0, interest: 0,
-        rent: 360_000, misc: 0,
+      expenseByAccount: {
+        utilities: 55_680,
+        communication: 47_364,
+        supplies: 72_000,
+        depreciation: 110_000,
+        rent: 360_000,
       },
       extras: [
         { name: '新聞図書費', amount: 12_000 },

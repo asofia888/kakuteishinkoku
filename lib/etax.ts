@@ -1,3 +1,4 @@
+import { KESSANSHO_EXPENSES } from './kessansho';
 import { IssuerProfile } from './types';
 
 /**
@@ -121,26 +122,8 @@ export interface KessanshoInput {
     inventoryClosing: number;
     costOfSales: number;
     grossProfit: number;
-    /** 様式の固定科目(⑧〜㉔・㉛)。租税公課の順 */
-    fixed: {
-      taxes_dues: number;
-      shipping: number;
-      utilities: number;
-      travel: number;
-      communication: number;
-      advertising: number;
-      entertainment: number;
-      insurance: number;
-      repairs: number;
-      supplies: number;
-      depreciation: number;
-      welfare: number;
-      salaries: number;
-      outsourcing: number;
-      interest: number;
-      rent: number;
-      misc: number;
-    };
+    /** 勘定科目ID → 経費計上額。様式の固定欄(⑧〜㉔・㉛)は KESSANSHO_EXPENSES で対応付ける */
+    expenseByAccount: Record<string, number>;
     /** 空欄科目(㉕〜㉚)に書く追加科目。最大6件 */
     extras: { name: string; amount: number }[];
     expensesTotal: number;
@@ -298,7 +281,14 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
   const bsCloseLiab =
     c.payable + c.cardPayable + c.deposit + c.ownerCredit + c.capital + c.profit;
 
-  const f = d.pl.fixed;
+  // 経費の固定欄(⑧〜㉔)は共通定義表の順に出力し、空欄科目(繰返し)を挟んで雑費㉛で締める
+  // (XMLスキーマの出現順 = AMF00190..00350, AMF00355×n, AMF00370)
+  const exp = (account: string | null) =>
+    account !== null ? opt(d.pl.expenseByAccount[account] ?? 0) : null;
+  const fixedExpensesXml = KESSANSHO_EXPENSES.filter((e) => e.xtxTag !== 'AMF00370')
+    .map((e) => tag(e.xtxTag, exp(e.account)))
+    .join('');
+  const miscXml = tag('AMF00370', exp('misc'));
 
   const xml =
     `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n` +
@@ -336,24 +326,9 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     `<AMF00110>${tag('AMF00120', opt(d.pl.inventoryOpening))}${tag('AMF00130', opt(d.pl.purchases))}${tag('AMF00140', opt(d.pl.inventoryOpening + d.pl.purchases))}${tag('AMF00150', opt(d.pl.inventoryClosing))}${tag('AMF00160', opt(d.pl.costOfSales))}</AMF00110>\n` +
     tag('AMF00170', d.pl.grossProfit) +
     `\n<AMF00180>` +
-    tag('AMF00190', opt(f.taxes_dues)) +
-    tag('AMF00200', opt(f.shipping)) +
-    tag('AMF00210', opt(f.utilities)) +
-    tag('AMF00220', opt(f.travel)) +
-    tag('AMF00230', opt(f.communication)) +
-    tag('AMF00240', opt(f.advertising)) +
-    tag('AMF00250', opt(f.entertainment)) +
-    tag('AMF00260', opt(f.insurance)) +
-    tag('AMF00270', opt(f.repairs)) +
-    tag('AMF00280', opt(f.supplies)) +
-    tag('AMF00290', opt(f.depreciation)) +
-    tag('AMF00300', opt(f.welfare)) +
-    tag('AMF00310', opt(f.salaries)) +
-    tag('AMF00320', opt(f.outsourcing)) +
-    tag('AMF00330', opt(f.interest)) +
-    tag('AMF00340', opt(f.rent)) +
+    fixedExpensesXml +
     extrasXml +
-    tag('AMF00370', opt(f.misc)) +
+    miscXml +
     tag('AMF00380', d.pl.expensesTotal) +
     `</AMF00180>\n` +
     tag('AMF00390', d.pl.net) +
