@@ -247,6 +247,12 @@ export function buildDemoData(): AppData {
       tel: '090-0000-0000',
       email: 'yamada@example.com',
       bankInfo: '○○銀行 △△支店(普通)1234567 ヤマダ タロウ',
+      nameKana: 'ヤマダ タロウ',
+      yago: 'ヤマダデザイン',
+      shokugyo: 'デザイン業',
+      etaxId: '',
+      zeimushoCode: '',
+      zeimushoName: '',
     },
     assets: [
       {

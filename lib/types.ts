@@ -164,6 +164,18 @@ export interface IssuerProfile {
   email: string;
   /** 振込先(自由記述・複数行可) */
   bankInfo: string;
+  /** 氏名フリガナ(e-Tax用) */
+  nameKana: string;
+  /** 屋号(e-Tax用) */
+  yago: string;
+  /** 業種名(e-Tax用) */
+  shokugyo: string;
+  /** e-Taxの利用者識別番号(16桁。未取得は空) */
+  etaxId: string;
+  /** 提出先税務署コード(5桁。e-Taxデータ出力に必須) */
+  zeimushoCode: string;
+  /** 提出先税務署名(「新宿」など。「税務署」は不要) */
+  zeimushoName: string;
 }
 
 export const DEFAULT_ISSUER: IssuerProfile = {
@@ -173,6 +185,12 @@ export const DEFAULT_ISSUER: IssuerProfile = {
   tel: '',
   email: '',
   bankInfo: '',
+  nameKana: '',
+  yago: '',
+  shokugyo: '',
+  etaxId: '',
+  zeimushoCode: '',
+  zeimushoName: '',
 };
 
 /**

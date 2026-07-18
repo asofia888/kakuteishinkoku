@@ -39,6 +39,25 @@ node "$SCRATCHPAD/verify-driver.js"
 - `const { chromium } = require('@playwright/test')` で起動できる(NODE_PATH 必須。スクリプトが repo 外にあるため)
 - 既存の E2E 一式(`npx playwright test`)も同じ LD_LIBRARY_PATH で通る
 
+## e-Tax(.xtx)の公式スキーマ検証
+
+lib/etax.ts の出力は国税庁公式XSDで検証できる(lib/etax.test.ts の条件付きテスト)。
+
+```bash
+# 仕様書の取得(公開CAB。09=XML構造設計書等【所得税】・19=XMLスキーマ)
+curl -sLO https://www.e-tax.nta.go.jp/shiyo/download/e-tax19.CAB
+# cabextract も dpkg -x で展開して使う(apt-get download cabextract libmspack0t64)
+cabextract -e SJIS -d xsd e-tax19.CAB
+# 展開後のファイル名は「19XMLスキーマ¥shotoku¥KOA210-011.xsd」のような ¥ 区切りの
+# フラット名になるため、¥ をディレクトリ区切りに変換してツリーを再構築してから使う
+ETAX_XSD_DIR=<ツリーのルート> ETAX_XMLLINT=<xmllintのパス> npx vitest run lib/etax.test.ts
+```
+
+- 検証対象スキーマ: `shotoku/RKO0010-250.xsd`(手続v25.0.0)。年分仕様の改定時は
+  lib/etax.ts の ETAX_VERSIONS を上げて再検証する
+- 文字項目には maxLength がある(資産名16字・償却方法10字・摘要15字など)。
+  超過は builder 側で切り詰めている
+
 ## 駆動時の注意
 
 - 削除・データ置換・サンプル読込は `confirm()` を挟む → `page.on('dialog', d => d.accept())` か `page.once('dialog', ...)` で処理

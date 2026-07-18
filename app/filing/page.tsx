@@ -2,12 +2,30 @@
 
 import Link from 'next/link';
 import React, { useMemo, useState } from 'react';
-import { Alert, btn, Card, PageHeader, selectCls } from '@/components/ui';
+import { Alert, btn, Card, input, PageHeader, selectCls } from '@/components/ui';
+import { accountLabel } from '@/lib/accounts';
 import { availableYears, summarizeYear, transactionsOfYear } from '@/lib/aggregate';
-import { yearDepreciationTotals } from '@/lib/assets';
+import {
+  bookValueAtEnd,
+  bookValueAtStart,
+  depreciationForYear,
+  METHOD_LABELS,
+  straightLineRate,
+  yearDepreciationTotals,
+} from '@/lib/assets';
+import { downloadText } from '@/lib/csv';
+import {
+  buildKessanshoXtx,
+  EtaxDepreciationRow,
+  EtaxPayrollRow,
+  etaxInputProblems,
+} from '@/lib/etax';
+import { today } from '@/lib/format';
 import { IncomeTaxResult, simulateIncomeTax } from '@/lib/incometax';
 import { BalanceSheet, buildBalanceSheet } from '@/lib/ledger';
 import { useStore } from '@/lib/store';
+import { summarizeTax } from '@/lib/tax';
+import { declining200For } from '@/lib/taxparams';
 import { DeductionEntry, emptyDeduction, IssuerProfile } from '@/lib/types';
 
 /** 転記用の1行(様式の欄名 → 帳簿の金額) */
@@ -345,8 +363,309 @@ export default function FilingPage() {
             <li>予定納税がある場合は第一表の該当欄で差し引いてください(本アプリでは未管理)。</li>
           </ul>
         </Card>
+
+        <EtaxCard
+          year={year}
+          summary={summary}
+          purchases={purchases}
+          costOfSales={costOfSales}
+          grossProfit={grossProfit}
+          expensesTotal={expensesTotal}
+          expLine={expLine}
+          tax={tax}
+          deduction={deduction}
+          bs={bs}
+          monthlyPurchases={monthlyPurchases}
+        />
       </div>
     </>
+  );
+}
+
+// ── e-Tax 連携(申告等データ .xtx のダウンロード) ──
+
+/** 損益計算書の様式に固定欄がある科目(これ以外の経費科目は空欄科目㉕〜㉚へ) */
+const FIXED_PL_ACCOUNTS = new Set([
+  'taxes_dues', 'shipping', 'utilities', 'travel', 'communication', 'advertising',
+  'entertainment', 'insurance', 'repairs', 'supplies', 'depreciation', 'welfare',
+  'salaries', 'outsourcing', 'interest', 'rent', 'misc', 'purchases',
+]);
+
+function EtaxCard({
+  year,
+  summary,
+  purchases,
+  costOfSales,
+  grossProfit,
+  expensesTotal,
+  expLine,
+  tax,
+  deduction,
+  bs,
+  monthlyPurchases,
+}: {
+  year: number;
+  summary: ReturnType<typeof summarizeYear>;
+  purchases: number;
+  costOfSales: number;
+  grossProfit: number;
+  expensesTotal: number;
+  expLine: (account: string) => number | null;
+  tax: IncomeTaxResult;
+  deduction: DeductionEntry;
+  bs: BalanceSheet;
+  monthlyPurchases: number[];
+}) {
+  const store = useStore();
+  const iss = store.issuer;
+  const [zeimushoCode, setZeimushoCode] = useState(iss.zeimushoCode);
+  const [zeimushoName, setZeimushoName] = useState(iss.zeimushoName);
+  const [etaxId, setEtaxId] = useState(iss.etaxId);
+  const [nameKana, setNameKana] = useState(iss.nameKana);
+  const [yago, setYago] = useState(iss.yago);
+  const [shokugyo, setShokugyo] = useState(iss.shokugyo);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const draft: IssuerProfile = {
+    ...iss,
+    zeimushoCode: zeimushoCode.trim(),
+    zeimushoName: zeimushoName.trim(),
+    etaxId: etaxId.trim(),
+    nameKana: nameKana.trim(),
+    yago: yago.trim(),
+    shokugyo: shokugyo.trim(),
+  };
+  const problems = etaxInputProblems(draft);
+
+  const download = () => {
+    store.updateIssuer(draft); // 入力を保存してから出力する
+    // 軽減税率(8%)対象の売上・仕入(税区分 taxable8 の集計)
+    const taxSummary = summarizeTax(store.transactions, year, store.taxSettings);
+
+    // 給料賃金の内訳(従業員別: 従事月数=支払があった月の数)
+    const inYear = store.payrolls.filter((p) => p.date.startsWith(`${year}-`));
+    const payroll: EtaxPayrollRow[] = [...new Set(inYear.map((p) => p.employee))].map((emp) => {
+      const rows = inYear.filter((p) => p.employee === emp);
+      return {
+        name: emp,
+        months: new Set(rows.map((p) => p.date.slice(5, 7))).size,
+        salary: rows.reduce((s, p) => s + p.gross, 0),
+        withholding: rows.reduce((s, p) => s + p.withholding, 0),
+      };
+    });
+
+    // 減価償却費の計算(本年分の償却がある資産)
+    const depreciation: EtaxDepreciationRow[] = store.assets
+      .map((a) => ({ a, d: depreciationForYear(a, year) }))
+      .filter(({ d }) => d.total > 0)
+      .map(({ a, d }) => ({
+        name: a.name,
+        acquired: a.acquiredDate.slice(0, 7),
+        cost: a.cost,
+        guarantee:
+          a.method === 'declining'
+            ? Math.floor((a.cost * declining200For(a.usefulLife).guarantee100000) / 100_000)
+            : null,
+        base: a.method === 'declining' ? bookValueAtStart(a, year) : a.cost,
+        method: METHOD_LABELS[a.method],
+        usefulLife:
+          a.method === 'straight' || a.method === 'declining'
+            ? a.usefulLife
+            : a.method === 'lump3'
+              ? 3
+              : null,
+        rate:
+          a.method === 'straight'
+            ? straightLineRate(a.usefulLife).toFixed(3)
+            : a.method === 'declining'
+              ? (declining200For(a.usefulLife).rate1000 / 1000).toFixed(3)
+              : null,
+        months: d.months || 12,
+        dep: d.total,
+        businessRatio: a.businessRatio,
+        business: d.business,
+        closing: bookValueAtEnd(a, year),
+        note:
+          a.method === 'immediate'
+            ? '措法28の2'
+            : a.method === 'lump3'
+              ? '3年均等'
+              : a.method === 'deferred'
+                ? '繰延資産(任意償却)'
+                : a.disposedDate && a.disposedDate.startsWith(String(year))
+                  ? `除却 ${a.disposedDate}`
+                  : a.method === 'declining'
+                    ? '定率法'
+                    : '',
+      }));
+
+    const rowOf = (rows: { id: string; opening: number; closing: number }[], id: string) =>
+      rows.find((r) => r.id === id) ?? { opening: 0, closing: 0 };
+    const asset = (id: string) => rowOf(bs.assets, id);
+    const liab = (id: string) => rowOf(bs.liabilities, id);
+    const equity = (id: string) => rowOf(bs.equity, id);
+
+    const xml = buildKessanshoXtx({
+      year,
+      issuer: draft,
+      createdDate: today(),
+      pl: {
+        sales: summary.totalSales,
+        inventoryOpening: summary.inventoryOpening,
+        purchases,
+        inventoryClosing: summary.inventoryClosing,
+        costOfSales,
+        grossProfit,
+        fixed: {
+          taxes_dues: expLine('taxes_dues') ?? 0,
+          shipping: expLine('shipping') ?? 0,
+          utilities: expLine('utilities') ?? 0,
+          travel: expLine('travel') ?? 0,
+          communication: expLine('communication') ?? 0,
+          advertising: expLine('advertising') ?? 0,
+          entertainment: expLine('entertainment') ?? 0,
+          insurance: expLine('insurance') ?? 0,
+          repairs: expLine('repairs') ?? 0,
+          supplies: expLine('supplies') ?? 0,
+          depreciation: expLine('depreciation') ?? 0,
+          welfare: expLine('welfare') ?? 0,
+          salaries: expLine('salaries') ?? 0,
+          outsourcing: expLine('outsourcing') ?? 0,
+          interest: expLine('interest') ?? 0,
+          rent: expLine('rent') ?? 0,
+          misc: expLine('misc') ?? 0,
+        },
+        extras: summary.expenseLines
+          .filter((l) => !FIXED_PL_ACCOUNTS.has(l.account) && l.business > 0)
+          .map((l) => ({ name: accountLabel(l.account), amount: l.business })),
+        expensesTotal,
+        net: summary.profit,
+        blueApplied: tax.blueApplied,
+        income: tax.totalIncome,
+        blueOption: deduction.blueDeduction,
+      },
+      monthly: { sales: summary.monthlySales, purchases: monthlyPurchases },
+      reduced: { sales: taxSummary.sales8, purchases: taxSummary.purchase8 },
+      payroll,
+      depreciation,
+      bs: {
+        opening: {
+          cash: asset('cash').opening,
+          bank: asset('bank').opening,
+          receivable: asset('receivable').opening,
+          inventory: asset('inventory').opening,
+          fixedAsset: asset('fixed_asset').opening,
+          deferredAsset: asset('deferred_asset').opening,
+          payable: liab('payable').opening,
+          cardPayable: liab('card').opening,
+          deposit: liab('deposit').opening,
+          capital: equity('capital').opening,
+        },
+        closing: {
+          cash: asset('cash').closing,
+          bank: asset('bank').closing,
+          receivable: asset('receivable').closing,
+          inventory: asset('inventory').closing,
+          fixedAsset: asset('fixed_asset').closing,
+          deferredAsset: asset('deferred_asset').closing,
+          ownerDraw: asset('owner_draw').closing,
+          payable: liab('payable').closing,
+          cardPayable: liab('card').closing,
+          deposit: liab('deposit').closing,
+          ownerCredit: equity('owner_invest').closing,
+          capital: equity('capital').closing,
+          profit: equity('profit').closing,
+        },
+      },
+    });
+    downloadText(`申告等データ_青色申告決算書_令和${year - 2018}年分.xtx`, xml, 'application/xml');
+    setMessage('申告等データ(.xtx)をダウンロードしました。e-Taxソフト(インストール版)の「組み込み」→「申告・申請等」で読み込んでください。');
+  };
+
+  const field = (
+    id: string,
+    label: string,
+    value: string,
+    set: (v: string) => void,
+    placeholder = '',
+    hint = '',
+  ) => (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-500" title={hint}>
+        {label}
+      </label>
+      <input
+        id={id}
+        type="text"
+        className={`${input} w-full`}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+      />
+    </div>
+  );
+
+  return (
+    <Card title="e-Tax 連携 ── 申告等データ(.xtx)のダウンロード">
+      <p className="mb-3 text-xs leading-relaxed text-slate-500">
+        この年分の<strong>青色申告決算書(一般用)</strong>を、e-Taxソフト(インストール版)の
+        「組み込み」で読み込める<strong>申告等データ(.xtx)</strong>として出力します
+        (手続「所得税及び復興特別所得税申告」v25.0.0・帳票KOA210 v11.0)。
+        読み込み後、申告書第一表・第二表はe-Taxソフトまたは作成コーナーで作成してください。
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {field('etax-zeimusho-code', '提出先税務署コード(5桁)*', zeimushoCode, setZeimushoCode, '01143', '国税庁サイトの「税務署の所在地などを知りたい方」で確認できます')}
+        {field('etax-zeimusho-name', '税務署名(「税務署」は不要)', zeimushoName, setZeimushoName, '新宿')}
+        {field('etax-id', '利用者識別番号(16桁・未取得は空欄)', etaxId, setEtaxId, '')}
+        {field('etax-name-kana', '氏名フリガナ', nameKana, setNameKana, 'ヤマダ タロウ')}
+        {field('etax-yago', '屋号', yago, setYago, '')}
+        {field('etax-shokugyo', '業種名', shokugyo, setShokugyo, 'デザイン業')}
+      </div>
+      <p className="mt-2 text-[11px] text-slate-500">
+        氏名・住所は請求書発行ページの「請求元情報」と共通です({iss.name || '未入力'} / {iss.address || '住所未入力'})。
+      </p>
+      {problems.length > 0 && (
+        <ul className="mt-3 list-disc pl-5 text-xs text-amber-700">
+          {problems.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          className={btn.primary}
+          disabled={problems.length > 0}
+          onClick={download}
+        >
+          ⬇ 申告等データ(.xtx)をダウンロード
+        </button>
+        <button
+          type="button"
+          className={btn.secondary}
+          onClick={() => {
+            store.updateIssuer(draft);
+            setMessage('e-Tax用の入力を保存しました。');
+          }}
+        >
+          入力を保存
+        </button>
+      </div>
+      {message && (
+        <div className="mt-3">
+          <Alert tone="info">{message}</Alert>
+        </div>
+      )}
+      <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
+        <li>
+          出力データは国税庁公開のXML構造設計書・XMLスキーマ(RKO0010 v25.0.0)に適合することを確認しています。
+          e-Taxソフト実機での最終確認は、読み込み後の帳票表示で必ず行ってください。
+        </li>
+        <li>e-Taxソフト(WEB版・SP版)は.xtxの組み込みに対応していません。インストール版をご利用ください。</li>
+        <li>専従者給与・貸倒引当金・製造原価(3ページ目の一部)・売上先/仕入先明細には対応していません。該当がある場合はe-Taxソフト上で追記してください。</li>
+        <li>貸借対照表が不一致のまま出力すると、そのままの数字が出ます。先に帳簿・決算書ページでご確認ください。</li>
+      </ul>
+    </Card>
   );
 }
 
