@@ -1,4 +1,4 @@
-import { accountLabel, accountType, isExcluded } from './accounts';
+import { accountLabel, accountType, isExcluded, repaymentInterest } from './accounts';
 import { transactionsOfYear } from './aggregate';
 import {
   bookValueAtEnd,
@@ -24,6 +24,9 @@ import { FixedAsset, InventoryCount, OpeningBalance, Transaction } from './types
  * - 売掛金の回収:     (借) 決済手段        / (貸) 売掛金
  * - カード引落し:     (借) 未払金(カード)  / (貸) 決済手段
  * - 未払金の支払い:   (借) 買掛金・未払金  / (貸) 決済手段
+ * - 借入れ:           (借) 決済手段        / (貸) 借入金
+ * - 借入金の返済:     (借) 借入金(元金)    / (貸) 決済手段
+ *                    (借) 利子割引料(利息)
  * 決済手段が「事業主(私費)」のときは、借方では事業主貸・貸方では事業主借になる。
  */
 
@@ -37,6 +40,7 @@ export type LedgerAccountId =
   | 'deferred_asset'
   | 'card'
   | 'payable'
+  | 'loan'
   | 'deposit'
   | 'owner_draw'
   | 'owner_invest';
@@ -50,6 +54,7 @@ export const LEDGER_LABELS: Record<LedgerAccountId, string> = {
   deferred_asset: '繰延資産(開業費等)',
   card: '未払金(クレジットカード)',
   payable: '買掛金・未払金',
+  loan: '借入金',
   deposit: '預り金(源泉所得税等)',
   owner_draw: '事業主貸',
   owner_invest: '事業主借',
@@ -57,7 +62,7 @@ export const LEDGER_LABELS: Record<LedgerAccountId, string> = {
 
 /** 期首残高(OpeningBalance)から引き継ぐ資産勘定。棚卸・固定資産・繰延資産は台帳から自動算出 */
 const ASSET_IDS: LedgerAccountId[] = ['cash', 'bank', 'receivable'];
-const LIABILITY_IDS: LedgerAccountId[] = ['card', 'payable', 'deposit'];
+const LIABILITY_IDS: LedgerAccountId[] = ['card', 'payable', 'loan', 'deposit'];
 const DEBIT_POSITIVE_IDS: string[] = [
   'cash',
   'bank',
@@ -149,6 +154,22 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
       debits: [{ account: 'deposit', amount: t.amount }],
       credits: [{ account: fundCr, amount: t.amount }],
     };
+  }
+  if (t.account === 'loan_receipt') {
+    // 融資の入金: 売上ではなく負債(借入金)の増加
+    return {
+      ...base,
+      debits: [{ account: fundDr, amount: t.amount }],
+      credits: [{ account: 'loan', amount: t.amount }],
+    };
+  }
+  if (t.account === 'loan_repayment') {
+    // 返済額 = 元金(借入金の減少)+ 利息(利子割引料 = 必要経費)
+    const interest = repaymentInterest(t);
+    const debits: JournalLine[] = [];
+    if (t.amount - interest > 0) debits.push({ account: 'loan', amount: t.amount - interest });
+    if (interest > 0) debits.push({ account: 'interest', amount: interest });
+    return { ...base, debits, credits: [{ account: fundCr, amount: t.amount }] };
   }
   if (t.account === 'fund_transfer') {
     // 資金の間の移動(ATM引き出し・預け入れなど)。損益に影響しない
@@ -338,7 +359,7 @@ export interface BalanceSheet {
 }
 
 export function emptyOpeningBalance(year: number): OpeningBalance {
-  return { year, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, deposit: 0 };
+  return { year, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 };
 }
 
 /**
@@ -385,6 +406,7 @@ export function buildBalanceSheet(
     deferred_asset: deferred.reduce((s, a) => s + bookValueAtStart(a, year), 0),
     card: ob.card,
     payable: ob.payable,
+    loan: ob.loan,
     deposit: ob.deposit,
     owner_draw: 0,
     owner_invest: 0,
@@ -439,6 +461,7 @@ export function buildBalanceSheet(
     openOf.deferred_asset -
     ob.card -
     ob.payable -
+    ob.loan -
     ob.deposit;
   const ownerInvest = c('owner_invest') - d('owner_invest');
   const equity: BalanceSheetRow[] = [
@@ -484,6 +507,7 @@ export function carryForwardOpening(prev: BalanceSheet): OpeningBalance {
     receivable: closingOf(prev.assets, 'receivable'),
     card: closingOf(prev.liabilities, 'card'),
     payable: closingOf(prev.liabilities, 'payable'),
+    loan: closingOf(prev.liabilities, 'loan'),
     deposit: closingOf(prev.liabilities, 'deposit'),
   };
 }

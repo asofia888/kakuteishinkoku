@@ -8,8 +8,17 @@ export type AnbunType = 'percent' | 'fixed';
  * 決済手段(どの資産・負債が動いたか)。複式仕訳の相手勘定になる。
  * receivable/payable を選ぶと発生主義の記帳(売掛金・買掛金の計上)になる。
  * deposit は預り金(給与から天引きした源泉所得税など)の計上に使う。
+ * loan は借入金(ローン会社が販売店へ直接支払った車両購入など)の計上に使う。
  */
-export type FundId = 'bank' | 'cash' | 'card' | 'receivable' | 'payable' | 'deposit' | 'owner';
+export type FundId =
+  | 'bank'
+  | 'cash'
+  | 'card'
+  | 'receivable'
+  | 'payable'
+  | 'loan'
+  | 'deposit'
+  | 'owner';
 
 /** 消費税の税区分(税込経理)。taxable10/8 は取引の収支に応じて課税売上/課税仕入になる */
 export type TaxCategory = 'taxable10' | 'taxable8' | 'exempt' | 'none';
@@ -51,6 +60,11 @@ export interface Transaction {
   taxCategory?: TaxCategory;
   /** 適格請求書(インボイス)の有無。未設定 = あり。課税仕入の税額控除の判定に使う */
   qualifiedInvoice?: boolean;
+  /**
+   * 科目が「借入金の返済(loan_repayment)」のときの、返済額のうち利息(円)。
+   * 利息は利子割引料として必要経費になり、残り(元金)だけが借入金を減らす。
+   */
+  interest?: number;
 }
 
 /** 自動仕訳ルール(配列の並び順 = 優先順位) */
@@ -91,6 +105,8 @@ export interface OpeningBalance {
   card: number;
   /** 買掛金・その他未払金 */
   payable: number;
+  /** 借入金(金融機関からの事業用借入の未返済残高) */
+  loan: number;
   /** 預り金(未納付の源泉所得税など) */
   deposit: number;
 }

@@ -13,6 +13,7 @@ export const FUNDS: { id: FundId; label: string; short: string }[] = [
   { id: 'card', label: 'クレジットカード(未払金)', short: 'カード' },
   { id: 'receivable', label: '売掛金(請求時の発生記録)', short: '売掛' },
   { id: 'payable', label: '買掛金・未払金(発生記録)', short: '買掛' },
+  { id: 'loan', label: '借入金(ローン会社・金融機関が直接支払い)', short: '借入' },
   { id: 'deposit', label: '預り金(源泉所得税などの天引き)', short: '預り金' },
   { id: 'owner', label: '事業主のプライベート資金', short: '私費' },
 ];
@@ -32,7 +33,7 @@ export function fundsOf(type: TxType): { id: FundId; label: string; short: strin
   const ids: FundId[] =
     type === 'income'
       ? ['bank', 'cash', 'receivable', 'owner']
-      : ['bank', 'cash', 'card', 'payable', 'deposit', 'owner'];
+      : ['bank', 'cash', 'card', 'payable', 'loan', 'deposit', 'owner'];
   return ids.map((id) => fundById.get(id)!);
 }
 
@@ -82,12 +83,25 @@ export const SETTLEMENT_ACCOUNTS: Account[] = [
   { id: 'fund_transfer', label: '資金移動(預金⇔現金)', type: 'expense' },
   // 給与から天引きした源泉所得税・社会保険料などを納めたとき
   { id: 'deposit_payment', label: '預り金の納付(源泉所得税・社会保険料)', type: 'expense' },
+  // 事業用の融資(日本政策金融公庫・銀行など)の入金。売上ではなく負債の増加
+  { id: 'loan_receipt', label: '借入金の借入れ(振替)', type: 'income' },
+  // 融資の返済。元金は負債の減少、うち利息は利子割引料(必要経費)として取引一覧で内訳を入力する
+  { id: 'loan_repayment', label: '借入金の返済(振替・利息は内訳で経費に)', type: 'expense' },
 ];
 
 const settlementById = new Map(SETTLEMENT_ACCOUNTS.map((a) => [a.id, a]));
 
 export function isSettlement(account: string | null): boolean {
   return account !== null && settlementById.has(account);
+}
+
+/**
+ * 借入金の返済(元金 + 利息)のうち利息部分。利子割引料として必要経費になる
+ * (振替科目のうち損益に影響するのはこの利息だけ)。返済以外の取引は0。
+ */
+export function repaymentInterest(t: { account: string | null; amount: number; interest?: number }): number {
+  if (t.account !== 'loan_repayment' || !t.interest || !Number.isFinite(t.interest)) return 0;
+  return Math.min(Math.max(0, Math.round(t.interest)), t.amount);
 }
 
 export function settlementsOf(type: TxType): Account[] {

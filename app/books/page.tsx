@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
+import { repaymentInterest } from '@/lib/accounts';
 import { availableYears, transactionsOfYear } from '@/lib/aggregate';
 import { bookValueAtStart, isDeferred } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
@@ -28,6 +29,7 @@ const OB_FIELDS: { key: keyof Omit<OpeningBalance, 'year'>; label: string; hint:
   { key: 'receivable', label: '売掛金', hint: '前年に計上し未回収の請求' },
   { key: 'card', label: 'カード未払金', hint: '前年利用・未引落しの額' },
   { key: 'payable', label: '買掛金・未払金', hint: 'その他の未払い' },
+  { key: 'loan', label: '借入金', hint: '1/1時点の事業用借入の残高(返済予定表の元金残高)' },
   { key: 'deposit', label: '預り金', hint: '未納付の源泉所得税など' },
 ];
 
@@ -62,6 +64,7 @@ export default function BooksPage() {
       receivable: opening?.receivable ?? 0,
       card: opening?.card ?? 0,
       payable: opening?.payable ?? 0,
+      loan: opening?.loan ?? 0,
       deposit: opening?.deposit ?? 0,
       inventory: inventoryAmount(store.inventories, year - 1),
       fixed_asset: store.assets
@@ -95,15 +98,19 @@ export default function BooksPage() {
       store.inventories,
     );
     const carry = carryForwardOpening(prevBs);
-    return (
-      carry.cash !== opening.cash ||
-      carry.bank !== opening.bank ||
-      carry.receivable !== opening.receivable ||
-      carry.card !== opening.card ||
-      carry.payable !== opening.payable ||
-      carry.deposit !== opening.deposit
-    );
+    return OB_FIELDS.some((f) => carry[f.key] !== opening[f.key]);
   }, [opening, store.openingBalances, store.transactions, store.assets, store.inventories, year]);
+
+  // 借入金: 期末残高がマイナス(期首残高の登録漏れ・利息を含めた全額を元金にしている等)と、
+  // 利息の内訳が未入力の返済(利息は利子割引料として経費になる)
+  const loanClosing = bs.liabilities.find((r) => r.id === 'loan')?.closing ?? 0;
+  const repaymentsWithoutInterest = useMemo(
+    () =>
+      transactionsOfYear(store.transactions, year).filter(
+        (t) => t.account === 'loan_repayment' && repaymentInterest(t) === 0,
+      ).length,
+    [store.transactions, year],
+  );
 
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
@@ -147,7 +154,7 @@ export default function BooksPage() {
         {message && <Alert tone="success">{message}</Alert>}
 
         <OpeningBalanceCard
-          key={`${year}:${opening ? `${opening.cash}-${opening.bank}-${opening.receivable}-${opening.card}-${opening.payable}-${opening.deposit}` : 'none'}`}
+          key={`${year}:${opening ? OB_FIELDS.map((f) => opening[f.key]).join('-') : 'none'}`}
           year={year}
           opening={opening}
           hasPrevData={
@@ -179,6 +186,22 @@ export default function BooksPage() {
             {year}年の期首残高が<strong>前年末の貸借対照表の残高と一致していません</strong>。
             前年の取引を後から修正した場合に起きます。「前年末の残高から自動設定」を押すと揃えられます
             (意図的にずらしている場合はこのままで構いません)。
+          </Alert>
+        )}
+
+        {loanClosing < 0 && (
+          <Alert tone="warning">
+            {year}年末の<strong>借入金の残高がマイナス({yen(loanClosing)})</strong>です。
+            期首残高の「借入金」が未登録か、返済の<strong>利息を元金として</strong>処理している可能性があります
+            (取引一覧で返済行の「うち利息」を入力すると、利息は利子割引料として経費になります)。
+          </Alert>
+        )}
+
+        {repaymentsWithoutInterest > 0 && (
+          <Alert tone="info">
+            利息の内訳が未入力の「借入金の返済」が{repaymentsWithoutInterest}件あります。
+            返済予定表(償還予定表)を見て、取引一覧の各返済行に<strong>うち利息</strong>を入力してください。
+            利息は利子割引料として必要経費になります(無利子の融資なら入力は不要です)。
           </Alert>
         )}
 
@@ -304,7 +327,13 @@ function OpeningBalanceCard({
     return Number.isFinite(n) ? Math.round(n) : 0;
   };
   const capital =
-    num('cash') + num('bank') + num('receivable') - num('card') - num('payable') - num('deposit');
+    num('cash') +
+    num('bank') +
+    num('receivable') -
+    num('card') -
+    num('payable') -
+    num('loan') -
+    num('deposit');
 
   return (
     <Card
@@ -327,6 +356,7 @@ function OpeningBalanceCard({
             receivable: num('receivable'),
             card: num('card'),
             payable: num('payable'),
+            loan: num('loan'),
             deposit: num('deposit'),
           });
         }}

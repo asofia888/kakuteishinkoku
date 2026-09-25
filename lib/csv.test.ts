@@ -206,6 +206,26 @@ describe('CSVエクスポートのインジェクション対策', () => {
     // 先頭に ' が付き、内部の " は "" にエスケープされる
     expect(csv).toContain('"\'=HYPERLINK(""http://evil.example"",""請求書"")"');
   });
+
+  it('transactionsToCsv: 借入金の返済は利息を経費計上額の列に出す', () => {
+    const repay: Transaction = {
+      id: 't2',
+      date: '2026-05-25',
+      amount: 50000,
+      description: '公庫 返済',
+      type: 'expense',
+      account: 'loan_repayment',
+      interest: 4800,
+      approved: true,
+      anbunApplied: false,
+      businessAmount: 50000,
+      source: 'csv',
+      createdAt: 1,
+      fund: 'bank',
+    };
+    const line = transactionsToCsv([repay]).split('\r\n')[1];
+    expect(line).toContain(',50000,預金,"借入金の返済(振替・利息は内訳で経費に)",4800,,,済');
+  });
 });
 
 describe('resolveTypeAndAmount', () => {

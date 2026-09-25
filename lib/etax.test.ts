@@ -75,15 +75,23 @@ function fixture(): KessanshoInput {
     bs: {
       opening: {
         cash: 50_000, bank: 800_000, receivable: 0, inventory: 0, fixedAsset: 0,
-        deferredAsset: 100_000, payable: 0, cardPayable: 0, deposit: 0, capital: 950_000,
+        deferredAsset: 100_000, payable: 0, cardPayable: 0, loan: 0, deposit: 0, capital: 950_000,
       },
       closing: {
         cash: 80_000, bank: 2_100_000, receivable: 350_000, inventory: 0, fixedAsset: 210_000,
         deferredAsset: 100_000, ownerDraw: 1_800_000, payable: 0, cardPayable: 120_000,
-        deposit: 15_000, ownerCredit: 200_000, capital: -97_956, profit: 4_402_956,
+        loan: 0, deposit: 15_000, ownerCredit: 200_000, capital: -97_956, profit: 4_402_956,
       },
     },
   };
+}
+
+/** 借入金ありの貸借対照表(期首200万・期末150万。借入れた資金は預金にある) */
+function loanFixture(): KessanshoInput {
+  const d = fixture();
+  d.bs.opening = { ...d.bs.opening, loan: 2_000_000, bank: d.bs.opening.bank + 2_000_000 };
+  d.bs.closing = { ...d.bs.closing, loan: 1_500_000, bank: d.bs.closing.bank + 1_500_000 };
+  return d;
 }
 
 describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
@@ -117,6 +125,19 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
     expect(xml).toContain('<AMG00440>4640000</AMG00440>');
     expect(xml).toContain('<AMG00740>-97956</AMG00740>');
     expect(xml).toContain('<AMG00760>4640000</AMG00760>');
+  });
+
+  it('借入金は期首 AMG00530・期末 AMG00660 に出力し、負債・資本の合計に含める', () => {
+    const x = buildKessanshoXtx(loanFixture());
+    expect(x).toContain('<AMG00530>2000000</AMG00530>');
+    expect(x).toContain('<AMG00660>1500000</AMG00660>');
+    // 期首・期末とも 資産合計 = 負債・資本合計
+    expect(x).toContain('<AMG00230>2950000</AMG00230>');
+    expect(x).toContain('<AMG00610>2950000</AMG00610>');
+    expect(x).toContain('<AMG00440>6140000</AMG00440>');
+    expect(x).toContain('<AMG00760>6140000</AMG00760>');
+    // 借入金がなければ欄を出さない(様式の空欄)
+    expect(xml).not.toContain('<AMG00530>');
   });
 
   it('0円の任意項目は出力しない(様式の空欄)', () => {
@@ -174,17 +195,22 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
   // 国税庁公式XSDでの検証(ローカル環境のみ:
   //   ETAX_XSD_DIR=<XSDツリー> ETAX_XMLLINT=<xmllintパス> npx vitest run lib/etax.test.ts)
   it.runIf(process.env.ETAX_XSD_DIR && process.env.ETAX_XMLLINT)(
-    '公式XSD(RKO0010-250)に対して valid である',
+    '公式XSD(RKO0010-250)に対して valid である(借入金ありの貸借対照表も含む)',
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'xtx-'));
-      const file = join(dir, 'test.xtx');
-      writeFileSync(file, xml, 'utf-8');
-      const out = execFileSync(
-        process.env.ETAX_XMLLINT!,
-        ['--noout', '--schema', join(process.env.ETAX_XSD_DIR!, 'shotoku/RKO0010-250.xsd'), file],
-        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-      expect(out).toBe(''); // validates はstderr側。エラーがあれば execFileSync が throw する
+      for (const [name, content] of [
+        ['test.xtx', xml],
+        ['loan.xtx', buildKessanshoXtx(loanFixture())],
+      ]) {
+        const file = join(dir, name);
+        writeFileSync(file, content, 'utf-8');
+        const out = execFileSync(
+          process.env.ETAX_XMLLINT!,
+          ['--noout', '--schema', join(process.env.ETAX_XSD_DIR!, 'shotoku/RKO0010-250.xsd'), file],
+          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        expect(out).toBe(''); // validates はstderr側。エラーがあれば execFileSync が throw する
+      }
     },
   );
 });

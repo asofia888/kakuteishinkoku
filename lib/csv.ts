@@ -1,4 +1,4 @@
-import { accountLabel, fundShort, isExcluded, isSettlement } from './accounts';
+import { accountLabel, fundShort, isExcluded, isSettlement, repaymentInterest } from './accounts';
 import { Transaction, TxType } from './types';
 
 /** CSVから読み取った1行分の明細 */
@@ -343,7 +343,9 @@ export function transactionsToCsv(transactions: Transaction[]): string {
   ];
   const lines = transactions.map((t) => {
     // 経費計上額・事業主貸は経費のみの概念。収入行・対象外・決済(振替)行は空欄にする
+    // (借入金の返済は、うち利息が利子割引料として経費計上額に入る)
     const biz = t.type === 'expense' && !isExcluded(t.account) && !isSettlement(t.account);
+    const interest = repaymentInterest(t);
     return [
       t.date,
       t.type === 'income' ? '収入' : '支出',
@@ -351,7 +353,7 @@ export function transactionsToCsv(transactions: Transaction[]): string {
       t.amount,
       fundShort(t.fund),
       `"${accountLabel(t.account).replace(/"/g, '""')}"`,
-      biz ? t.businessAmount : '',
+      biz ? t.businessAmount : interest > 0 ? interest : '',
       biz ? t.amount - t.businessAmount : '',
       t.anbunApplied ? '済' : '',
       t.approved ? '済' : '未',

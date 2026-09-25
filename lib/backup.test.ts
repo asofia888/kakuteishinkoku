@@ -44,7 +44,7 @@ const goodData: AppData = {
   transactions: [goodTx, depositTx],
   rules: [{ id: 'r1', keyword: 'amazon', account: 'supplies' }],
   anbunSettings: [{ id: 's1', account: 'rent', type: 'fixed', value: 30000 }],
-  openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 }],
+  openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 }],
   taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
   invoices: [
     {
@@ -281,6 +281,28 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
     expect(data.transactions[1].counterFund).toBe('deposit');
   });
 
+  it('借入金: fund loan・返済の利息・期首残高の借入金を保持する(回帰: 新しい決済手段が普通預金に化ける)', () => {
+    const data = sanitizeAppData({
+      transactions: [
+        { ...goodTx, id: 'tx-car', type: 'expense', account: 'asset_purchase', fund: 'loan' },
+        { ...goodTx, id: 'tx-rep', type: 'expense', account: 'loan_repayment', amount: 50000, interest: 4999.6 },
+        // 返済額を超える利息は返済額に丸め、負の値・文字列は捨てる
+        { ...goodTx, id: 'tx-over', type: 'expense', account: 'loan_repayment', amount: 50000, interest: 70000 },
+        { ...goodTx, id: 'tx-neg', type: 'expense', account: 'loan_repayment', interest: -1 },
+        { ...goodTx, id: 'tx-str', type: 'expense', account: 'loan_repayment', interest: 'たくさん' },
+      ],
+      rules: [],
+      anbunSettings: [],
+      openingBalances: [{ year: 2026, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, loan: 3000000, deposit: 0 }],
+    })!;
+    expect(data.transactions[0].fund).toBe('loan');
+    expect(data.transactions[1].interest).toBe(5000);
+    expect(data.transactions[2].interest).toBe(50000);
+    expect(data.transactions[3].interest).toBeUndefined();
+    expect(data.transactions[4].interest).toBeUndefined();
+    expect(data.openingBalances[0].loan).toBe(3000000);
+  });
+
   it('taxCategory と qualifiedInvoice を保持し、不正値は捨てる', () => {
     const data = sanitizeAppData({
       transactions: [
@@ -316,6 +338,7 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
       receivable: 0,
       card: 0,
       payable: 0,
+      loan: 0, // 旧データ(借入金なし)は0で読み込む
       deposit: 0,
     });
     expect(data.taxSettings).toEqual({ ...DEFAULT_TAX_SETTINGS, taxable: true });
@@ -339,6 +362,7 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
       receivable: 0,
       card: -200,
       payable: 0,
+      loan: 0,
       deposit: 0,
     });
   });

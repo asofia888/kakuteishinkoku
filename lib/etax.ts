@@ -148,6 +148,8 @@ export interface KessanshoInput {
       deferredAsset: number;
       payable: number;
       cardPayable: number;
+      /** 借入金 */
+      loan: number;
       deposit: number;
       capital: number;
     };
@@ -161,6 +163,8 @@ export interface KessanshoInput {
       ownerDraw: number;
       payable: number;
       cardPayable: number;
+      /** 借入金 */
+      loan: number;
       deposit: number;
       ownerCredit: number;
       capital: number;
@@ -277,9 +281,9 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     o.cash + o.bank + o.receivable + o.inventory + o.fixedAsset + o.deferredAsset;
   const bsCloseTotal =
     c.cash + c.bank + c.receivable + c.inventory + c.fixedAsset + c.deferredAsset + c.ownerDraw;
-  const bsOpenLiab = o.payable + o.cardPayable + o.deposit + o.capital;
+  const bsOpenLiab = o.payable + o.loan + o.cardPayable + o.deposit + o.capital;
   const bsCloseLiab =
-    c.payable + c.cardPayable + c.deposit + c.ownerCredit + c.capital + c.profit;
+    c.payable + c.loan + c.cardPayable + c.deposit + c.ownerCredit + c.capital + c.profit;
 
   // 経費の固定欄(⑧〜㉔)は共通定義表の順に出力し、空欄科目(繰返し)を挟んで雑費㉛で締める
   // (XMLスキーマの出現順 = AMF00190..00350, AMF00355×n, AMF00370)
@@ -373,8 +377,8 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     `<AMG00240><AMG00250><gen:mm>12</gen:mm><gen:dd>31</gen:dd></AMG00250>${tag('AMG00260', opt(c.cash))}${tag('AMG00290', opt(c.bank))}${tag('AMG00310', opt(c.receivable))}${tag('AMG00330', opt(c.inventory))}${tag('AMG00400', opt(c.fixedAsset))}${tag('AMG00430', opt(c.ownerDraw))}${tag('AMG00440', bsCloseTotal)}</AMG00240>` +
     `</AMG00020>` +
     `<AMG00450>` +
-    `<AMG00490><AMG00500><gen:mm>1</gen:mm><gen:dd>1</gen:dd></AMG00500>${tag('AMG00520', opt(o.payable))}${tag('AMG00540', opt(o.cardPayable))}${tag('AMG00560', opt(o.deposit))}${tag('AMG00600', o.capital)}${tag('AMG00610', bsOpenLiab)}</AMG00490>` +
-    `<AMG00620><AMG00630><gen:mm>12</gen:mm><gen:dd>31</gen:dd></AMG00630>${tag('AMG00650', opt(c.payable))}${tag('AMG00670', opt(c.cardPayable))}${tag('AMG00690', opt(c.deposit))}${tag('AMG00730', opt(c.ownerCredit))}${tag('AMG00740', c.capital)}${tag('AMG00750', c.profit)}${tag('AMG00760', bsCloseLiab)}</AMG00620>` +
+    `<AMG00490><AMG00500><gen:mm>1</gen:mm><gen:dd>1</gen:dd></AMG00500>${tag('AMG00520', opt(o.payable))}${tag('AMG00530', opt(o.loan))}${tag('AMG00540', opt(o.cardPayable))}${tag('AMG00560', opt(o.deposit))}${tag('AMG00600', o.capital)}${tag('AMG00610', bsOpenLiab)}</AMG00490>` +
+    `<AMG00620><AMG00630><gen:mm>12</gen:mm><gen:dd>31</gen:dd></AMG00630>${tag('AMG00650', opt(c.payable))}${tag('AMG00660', opt(c.loan))}${tag('AMG00670', opt(c.cardPayable))}${tag('AMG00690', opt(c.deposit))}${tag('AMG00730', opt(c.ownerCredit))}${tag('AMG00740', c.capital)}${tag('AMG00750', c.profit)}${tag('AMG00760', bsCloseLiab)}</AMG00620>` +
     `</AMG00450>` +
     `</AMG00000>\n</KOA210-4>\n` +
     `</KOA210>\n</CONTENTS>\n</RKO0010>\n</DATA>\n`;

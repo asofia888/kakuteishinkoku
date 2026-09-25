@@ -211,7 +211,7 @@ export function buildDemoData(): AppData {
       { id: uid(), account: 'communication', type: 'percent', value: 60 },
     ],
     openingBalances: [
-      { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 },
+      { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
     ],
     taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
     invoices: [

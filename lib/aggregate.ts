@@ -1,4 +1,11 @@
-import { accountLabel, EXPENSE_ACCOUNTS, INCOME_ACCOUNTS, isExcluded, isSettlement } from './accounts';
+import {
+  accountLabel,
+  EXPENSE_ACCOUNTS,
+  INCOME_ACCOUNTS,
+  isExcluded,
+  isSettlement,
+  repaymentInterest,
+} from './accounts';
 import { yearDepreciationTotals } from './assets';
 import { SMALL_ASSET } from './taxparams';
 import { FixedAsset, InventoryCount, Transaction } from './types';
@@ -80,8 +87,18 @@ export function summarizeYear(
       continue;
     }
     if (!t.approved) unapprovedCount++;
-    // 決済・振替(売掛金の回収・カード引落し等)は損益ではないため売上・経費に含めない
-    if (isSettlement(t.account)) continue;
+    // 決済・振替(売掛金の回収・カード引落し等)は損益ではないため売上・経費に含めない。
+    // ただし借入金の返済に含まれる利息は利子割引料(必要経費)になる
+    if (isSettlement(t.account)) {
+      const interest = repaymentInterest(t);
+      if (interest > 0) {
+        const cur = expenseTotals.get('interest') ?? { gross: 0, business: 0 };
+        cur.gross += interest;
+        cur.business += interest;
+        expenseTotals.set('interest', cur);
+      }
+      continue;
+    }
     if (t.type === 'income') {
       const month = Number(t.date.slice(5, 7)) - 1;
       if (month >= 0 && month < 12) monthlySales[month] += t.amount;
@@ -162,10 +179,12 @@ export function monthlyBreakdown(
   const sales = Array.from({ length: 12 }, () => 0);
   const expense = Array.from({ length: 12 }, () => 0);
   for (const t of transactionsOfYear(transactions, year)) {
-    if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) continue;
+    if (t.account === null || isExcluded(t.account)) continue;
     const m = Number(t.date.slice(5, 7)) - 1;
     if (m < 0 || m > 11) continue;
-    if (t.type === 'income') sales[m] += t.amount;
+    // 振替は損益に入らない(借入金の返済の利息だけは利子割引料として経費)
+    if (isSettlement(t.account)) expense[m] += repaymentInterest(t);
+    else if (t.type === 'income') sales[m] += t.amount;
     else expense[m] += t.businessAmount;
   }
   // 決算整理(償却費・棚卸調整)は12月へ

@@ -247,3 +247,29 @@ describe('monthlyBreakdown: 月次推移', () => {
     ).profit);
   });
 });
+
+describe('借入金の返済の利息', () => {
+  it('利息は利子割引料に合算され、月次推移ではその月の経費になる(元金・借入れは損益外)', () => {
+    const base = {
+      approved: true,
+      anbunApplied: false,
+      source: 'csv' as const,
+      createdAt: 1,
+      fund: 'bank' as const,
+    };
+    const txs: Transaction[] = [
+      { ...base, id: 'r1', date: '2026-04-25', amount: 50_000, businessAmount: 50_000, description: '返済', type: 'expense', account: 'loan_repayment', interest: 5_000 },
+      { ...base, id: 'b1', date: '2026-03-01', amount: 1_000_000, businessAmount: 1_000_000, description: '融資', type: 'income', account: 'loan_receipt' },
+      { ...base, id: 'i1', date: '2026-04-30', amount: 1_000, businessAmount: 1_000, description: '手形の割引料', type: 'expense', account: 'interest' },
+    ];
+    const s = summarizeYear(txs, 2026);
+    expect(s.expenseLines).toEqual([
+      { account: 'interest', label: '利子割引料', gross: 6_000, business: 6_000, owner: 0 },
+    ]);
+    expect(s.totalSales).toBe(0);
+    const m = monthlyBreakdown(txs, 2026);
+    expect(m[2].sales).toBe(0); // 3月の借入れは売上ではない
+    expect(m[3].expense).toBe(6_000);
+    expect(m.reduce((sum, r) => sum + r.profit, 0)).toBe(s.profit);
+  });
+});

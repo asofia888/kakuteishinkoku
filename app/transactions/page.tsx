@@ -11,6 +11,7 @@ import {
   fundsOf,
   isExcluded,
   isSettlement,
+  repaymentInterest,
   settlementsOf,
 } from '@/lib/accounts';
 import { availableYears, DEPRECIATION_MIN } from '@/lib/aggregate';
@@ -765,6 +766,49 @@ function CounterFundControl({ t }: { t: Transaction }) {
   );
 }
 
+/**
+ * 借入金の返済の内訳入力。返済額のうち利息は利子割引料(必要経費)、残りの元金が借入金の減少になる。
+ * 入力中の値は手元に持ち、確定(フォーカスが外れる・Enter)したときだけ保存する。
+ */
+function InterestControl({ t }: { t: Transaction }) {
+  const store = useStore();
+  const saved = repaymentInterest(t);
+  const [value, setValue] = useState(saved > 0 ? String(saved) : '');
+  if (t.account !== 'loan_repayment') return null;
+  const commit = () => {
+    const n = Math.round(Number(value));
+    const interest = Number.isFinite(n) && n > 0 ? Math.min(n, t.amount) : 0;
+    setValue(interest > 0 ? String(interest) : '');
+    if (interest !== saved) {
+      store.updateTransaction(t.id, { interest: interest > 0 ? interest : undefined });
+    }
+  };
+  return (
+    <div
+      className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500"
+      title="返済予定表(償還予定表)の利息額を入力します。利息は利子割引料として経費になり、残りが元金の返済です"
+    >
+      <label htmlFor={`interest-${t.id}`}>うち利息</label>
+      <input
+        id={`interest-${t.id}`}
+        type="number"
+        min={0}
+        max={t.amount}
+        inputMode="numeric"
+        className="w-24 rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-[11px] text-slate-700"
+        value={value}
+        placeholder="0"
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+        }}
+      />
+      <span>円 → 元金 {yen(t.amount - saved)}</span>
+    </div>
+  );
+}
+
 /** 消費税の税区分と適格請求書チェック(課税事業者の設定時のみ表示) */
 function TaxControls({ t }: { t: Transaction }) {
   const store = useStore();
@@ -880,6 +924,7 @@ function TxRow({
         />
         <DepreciationHint account={t.account} amount={t.amount} type={t.type} />
         <CounterFundControl t={t} />
+        <InterestControl key={`${t.id}:${t.interest ?? 0}`} t={t} />
         <TaxControls t={t} />
       </td>
       <td className="tabular px-2 py-2 text-right whitespace-nowrap">
@@ -892,6 +937,13 @@ function TxRow({
               </span>
             )}
           </>
+        ) : repaymentInterest(t) > 0 ? (
+          <span title="借入金の返済のうち利息(利子割引料)">
+            {yen(repaymentInterest(t))}
+            <span className="ml-1 rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-600">
+              利息
+            </span>
+          </span>
         ) : (
           <span className="text-slate-300">—</span>
         )}

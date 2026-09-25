@@ -122,7 +122,7 @@ describe('entryForTransaction: 仕訳の導出', () => {
 
 describe('buildBalanceSheet: 貸借対照表', () => {
   const year = 2026;
-  const opening = { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, deposit: 0 };
+  const opening = { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 };
   const txs: Transaction[] = [
     tx({ date: '2026-01-25', description: '報酬', type: 'income', account: 'sales', amount: 300000 }),
     tx({
@@ -180,7 +180,7 @@ describe('buildBalanceSheet: 貸借対照表', () => {
     expect(next.receivable).toBe(220_000);
     // 翌年の元入金(資産-負債)= nextCapital
     const nextCapital =
-      next.cash + next.bank + next.receivable - next.card - next.payable - next.deposit;
+      next.cash + next.bank + next.receivable - next.card - next.payable - next.loan - next.deposit;
     expect(nextCapital).toBe(bs.nextCapital);
   });
 
@@ -225,7 +225,7 @@ describe('generalLedger: 総勘定元帳', () => {
 
 describe('固定資産・棚卸の帳簿統合', () => {
   const year = 2026;
-  const opening = { year, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 };
+  const opening = { year, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 };
   const pc: FixedAsset = {
     id: 'a1',
     name: 'ノートPC',
@@ -288,7 +288,7 @@ describe('固定資産・棚卸の帳簿統合', () => {
 });
 
 describe('除却資産の帳簿統合', () => {
-  const opening = { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 };
+  const opening = { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 };
   // 2025-07取得 240,000円・4年。2026-03-31除却 → 2026年は3ヶ月償却15,000・残存195,000
   const pc: FixedAsset = {
     id: 'a1',
@@ -357,7 +357,7 @@ describe('資金移動(fund_transfer)', () => {
     const bs = buildBalanceSheet(
       [tx({ date: '2026-04-05', description: 'ATM', type: 'expense', account: 'fund_transfer', fund: 'bank', counterFund: 'cash', amount: 30000 })],
       2026,
-      { year: 2026, cash: 0, bank: 100000, receivable: 0, card: 0, payable: 0, deposit: 0 },
+      { year: 2026, cash: 0, bank: 100000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
     );
     const closing = (id: string) => bs.assets.find((r) => r.id === id)!.closing;
     expect(closing('bank')).toBe(70000);
@@ -384,7 +384,7 @@ describe('繰延資産(開業費)の帳簿統合', () => {
     const bs = buildBalanceSheet(
       [],
       2026,
-      { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, deposit: 0 },
+      { year: 2026, cash: 0, bank: 500000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
       [kaigyo],
       [],
     );
@@ -403,7 +403,7 @@ describe('繰延資産(開業費)の帳簿統合', () => {
     const bs = buildBalanceSheet(
       [],
       2027,
-      { year: 2027, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, deposit: 0 },
+      { year: 2027, cash: 0, bank: 0, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
       [kaigyo],
       [],
     );
@@ -412,5 +412,81 @@ describe('繰延資産(開業費)の帳簿統合', () => {
     expect(deferredRow.closing).toBe(200000); // 2027年は償却指定なし
     expect(bs.capital).toBe(200000); // 元入金に繰延資産の期首が含まれる
     expect(bs.balanced).toBe(true);
+  });
+});
+
+describe('借入金: 借入れ・返済(元金/利息)・期首残高', () => {
+  const year = 2026;
+  const opening = { year, cash: 0, bank: 1_000_000, receivable: 0, card: 0, payable: 0, loan: 1_000_000, deposit: 0 };
+  const repay = (date: string, interest?: number) =>
+    tx({ date, description: '公庫 返済', type: 'expense', account: 'loan_repayment', amount: 50_000, interest });
+  const txs: Transaction[] = [
+    tx({ date: '2026-03-01', description: '公庫 融資入金', type: 'income', account: 'loan_receipt', amount: 2_000_000 }),
+    repay('2026-04-25', 5_000),
+    repay('2026-05-25', 4_800),
+    tx({ date: '2026-06-01', description: '報酬', type: 'income', account: 'sales', amount: 300_000 }),
+  ];
+
+  it('借入れは (借)普通預金 / (貸)借入金。売上にはならない', () => {
+    const e = entryForTransaction(txs[0])!;
+    expect(e.debits).toEqual([{ account: 'bank', amount: 2_000_000 }]);
+    expect(e.credits).toEqual([{ account: 'loan', amount: 2_000_000 }]);
+    expect(summarizeYear([txs[0]], year).totalSales).toBe(0);
+  });
+
+  it('返済は元金を借入金、利息を利子割引料に分ける(利息は返済額が上限)', () => {
+    expect(entryForTransaction(repay('2026-04-25', 5_000))!.debits).toEqual([
+      { account: 'loan', amount: 45_000 },
+      { account: 'interest', amount: 5_000 },
+    ]);
+    // 利息の入力なし(無利子融資など)は全額が元金
+    expect(entryForTransaction(repay('2026-04-25'))!.debits).toEqual([{ account: 'loan', amount: 50_000 }]);
+    // 返済額を超える利息は返済額で頭打ち(元金0円の行は作らない)
+    expect(entryForTransaction(repay('2026-04-25', 80_000))!.debits).toEqual([
+      { account: 'interest', amount: 50_000 },
+    ]);
+  });
+
+  it('利息は利子割引料として損益に入り、帳簿の所得と損益集計が一致する', () => {
+    const summary = summarizeYear(txs, year);
+    expect(summary.expenseLines.find((l) => l.account === 'interest')?.business).toBe(9_800);
+    expect(summary.profit).toBe(300_000 - 9_800);
+    const bs = buildBalanceSheet(txs, year, opening);
+    expect(bs.profit).toBe(summary.profit);
+  });
+
+  it('貸借対照表: 借入金の期首・期末と元入金、貸借一致', () => {
+    const bs = buildBalanceSheet(txs, year, opening);
+    const loan = bs.liabilities.find((r) => r.id === 'loan')!;
+    expect(loan.label).toBe('借入金');
+    expect(loan.opening).toBe(1_000_000);
+    // 1,000,000 + 2,000,000 − 元金(45,000 + 45,200)
+    expect(loan.closing).toBe(2_909_800);
+    expect(bs.capital).toBe(0); // 預金100万 − 借入金100万
+    expect(bs.balanced).toBe(true);
+  });
+
+  it('翌年への繰越に借入金が含まれ、元入金の恒等式が成り立つ', () => {
+    const bs = buildBalanceSheet(txs, year, opening);
+    const next = carryForwardOpening(bs);
+    expect(next.loan).toBe(2_909_800);
+    const nextCapital =
+      next.cash + next.bank + next.receivable - next.card - next.payable - next.loan - next.deposit;
+    expect(nextCapital).toBe(bs.nextCapital);
+  });
+
+  it('決済手段「借入金」: ローン会社が販売店へ直接支払った車両は (借)減価償却資産 / (貸)借入金', () => {
+    const e = entryForTransaction(
+      tx({ description: '営業車(オートローン)', type: 'expense', account: 'asset_purchase', fund: 'loan', amount: 1_800_000 }),
+    )!;
+    expect(e.debits).toEqual([{ account: 'fixed_asset', amount: 1_800_000 }]);
+    expect(e.credits).toEqual([{ account: 'loan', amount: 1_800_000 }]);
+  });
+
+  it('借入金の総勘定元帳は貸方で増え、返済(元金)で減る', () => {
+    const rows = generalLedger(deriveJournal(txs), 'loan', 1_000_000);
+    expect(rows.map((r) => r.balance)).toEqual([3_000_000, 2_955_000, 2_909_800]);
+    expect(rows[0].counter).toBe('普通預金'); // 借入れ(単一仕訳)
+    expect(rows[1].counter).toBe('諸口'); // 返済は元金+利息の複合仕訳
   });
 });
