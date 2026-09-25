@@ -61,6 +61,16 @@ export interface Transaction {
   /** 適格請求書(インボイス)の有無。未設定 = あり。課税仕入の税額控除の判定に使う */
   qualifiedInvoice?: boolean;
   /**
+   * 決済手段が普通預金・クレジットカードのときの口座・カード(補助科目 FundAccount の ID)。
+   * 未設定(または削除済みの口座)は、その決済手段で最初に登録した口座として扱う。
+   */
+  fundAccount?: string;
+  /**
+   * 相手側の口座・カード(補助科目 ID)。資金移動の移動先/移動元が普通預金・カードのとき、
+   * 「カード代金の引落し」で引き落とされたカードを指す。
+   */
+  counterAccount?: string;
+  /**
    * 科目が「借入金の返済(loan_repayment)」のときの、返済額のうち利息(円)。
    * 利息は利子割引料として必要経費になり、残り(元金)だけが借入金を減らす。
    */
@@ -76,11 +86,17 @@ export interface Rule {
   account: string;
 }
 
-/** 家事按分設定(勘定科目ごとに1件) */
+/**
+ * 家事按分設定(勘定科目 × 適用開始年ごとに1件)。
+ * 同じ科目に複数の設定があるときは、取引の年に対して「適用開始年がその年以前で最も新しい」設定を使う
+ * (引っ越しで事業割合が変わった年から新しい設定にし、申告済みの年の経費を変えないため)。
+ */
 export interface AnbunSetting {
   id: string;
   /** 対象の勘定科目ID(経費のみ) */
   account: string;
+  /** 適用開始年。未設定 = すべての年(最初の設定) */
+  fromYear?: number;
   /** 計算タイプ */
   type: AnbunType;
   /** percent: 事業割合 1〜100(%) / fixed: 月あたりの経費計上上限額(円) */
@@ -109,6 +125,11 @@ export interface OpeningBalance {
   loan: number;
   /** 預り金(未納付の源泉所得税など) */
   deposit: number;
+  /**
+   * 口座・カード(補助科目)ごとの期首残高(補助科目 ID → 残高)。
+   * 普通預金・カードの合計(bank / card)と一致させて保存する。口座が1つなら省略
+   */
+  subBalances?: Record<string, number>;
 }
 
 /** 消費税の設定 */
@@ -289,6 +310,50 @@ export interface YearEndAdjustment {
   declaredSocialInsurance: number;
 }
 
+/**
+ * 口座・クレジットカードの補助科目。普通預金・カード未払金を口座ごとに分けて
+ * 元帳・残高照合を行う(貸借対照表は合計で表示する)。登録順の最初が既定の口座
+ */
+export interface FundAccount {
+  id: string;
+  fund: 'bank' | 'card';
+  /** 表示名(例: 楽天銀行・三井住友カード) */
+  name: string;
+  createdAt: number;
+}
+
+/**
+ * 残高照合の記録。通帳・カード明細の残高と帳簿残高を突き合わせた日付と金額を残し、
+ * 後から帳簿を直して食い違いが生じたら検出できるようにする
+ */
+export interface Reconciliation {
+  id: string;
+  /** 照合した資金: 'cash' | 'bank' | 'card'(口座が1つのとき)または補助科目 ID */
+  target: string;
+  /** 照合日(この日の取引まで含めた残高) YYYY-MM-DD */
+  date: string;
+  /** 通帳・明細の残高(カードは未払残高) */
+  balance: number;
+  createdAt: number;
+}
+
+/** 地代家賃の支払先(青色申告決算書2ページ「地代家賃の内訳」) */
+export interface RentPayee {
+  id: string;
+  /** 支払先の氏名・名称(大家・管理会社) */
+  name: string;
+  /** 支払先の住所 */
+  address: string;
+  /** 賃借物件(例: 自宅兼事務所・事務所・駐車場。様式は14字まで) */
+  property: string;
+  /**
+   * 摘要に含まれる語。支払先が複数のとき、地代家賃の取引をこの語で振り分ける
+   * (空 = 振り分けに使わない。支払先が1件ならすべての地代家賃がその支払先になる)
+   */
+  keyword: string;
+  createdAt: number;
+}
+
 /** 取引先(請求書の宛先など)。請求書の保存時に自動登録される */
 export interface Partner {
   id: string;
@@ -326,6 +391,10 @@ export interface DeductionEntry {
   blueDeduction: 650000 | 550000 | 100000;
   /** 源泉徴収税額(請求書の源泉から自動集計できる) */
   withholding: number;
+  /** 予定納税額(第1期・第2期の合計。7月・11月に納付した額) */
+  prepaidTax: number;
+  /** 前年以前(3年以内)から繰り越された純損失の額(青色申告。本年の所得から差し引く) */
+  lossCarryforward: number;
 }
 
 export function emptyDeduction(year: number): DeductionEntry {
@@ -343,6 +412,8 @@ export function emptyDeduction(year: number): DeductionEntry {
     others: 0,
     blueDeduction: 650000,
     withholding: 0,
+    prepaidTax: 0,
+    lossCarryforward: 0,
   };
 }
 
@@ -371,6 +442,17 @@ export interface AppData {
   payrolls: PayrollEntry[];
   /** 年末調整の入力(年 × 従業員ごとに1件) */
   yearEndAdjustments: YearEndAdjustment[];
+  /**
+   * 申告済みとしてロックした年。ロック中の年の帳簿(仕訳帳・貸借対照表)の数字が
+   * 変わる変更は保存されない(申告後に帳簿が静かに書き換わるのを防ぐ)。
+   */
+  lockedYears: number[];
+  /** 口座・カードの補助科目 */
+  fundAccounts: FundAccount[];
+  /** 残高照合の記録 */
+  reconciliations: Reconciliation[];
+  /** 地代家賃の支払先 */
+  rentPayees: RentPayee[];
 }
 
 export function uid(): string {

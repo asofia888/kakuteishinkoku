@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BarChart from '@/components/BarChart';
+import { YearChecklist } from '@/components/YearChecklist';
 import { Alert, btn, Card, EmptyState, PageHeader, selectCls, StatCard } from '@/components/ui';
 import {
   availableYears,
@@ -13,16 +14,17 @@ import {
   summaryToCsv,
   transactionsOfYear,
 } from '@/lib/aggregate';
-import { buildBackupJson, isNewerBackup, parseBackupFilesJson, parseBackupJson } from '@/lib/backup';
-import { downloadText, transactionsToCsv } from '@/lib/csv';
+import { isNewerBackup, parseBackupFilesJson, parseBackupJson } from '@/lib/backup';
+import { BACKUP_DONE_EVENT, downloadBackupFile } from '@/lib/backupDownload';
 import {
-  deleteOrphans,
-  exportAllFiles,
-  formatBytes,
-  PortableFile,
-  restoreAllFiles,
-  totalUsage,
-} from '@/lib/files';
+  BACKUP_REMIND_DAYS,
+  daysSince,
+  LAST_BACKUP_KEY,
+  readNumber,
+  storagePersisted,
+} from '@/lib/dataSafety';
+import { downloadText, transactionsToCsv } from '@/lib/csv';
+import { deleteOrphans, formatBytes, restoreAllFiles, totalUsage } from '@/lib/files';
 import { today, yen } from '@/lib/format';
 import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
@@ -80,20 +82,8 @@ export default function DashboardPage() {
     store.loadDemoData();
   };
 
-  const downloadBackup = async () => {
-    // 証憑(IndexedDB)も同梱する。読み出せない環境でも帳簿だけはバックアップする
-    let files: PortableFile[] = [];
-    try {
-      files = await exportAllFiles();
-    } catch {
-      alert('証憑の読み出しに失敗したため、帳簿データのみのバックアップを作成します。');
-    }
-    downloadText(
-      `申告スナップ_バックアップ_${today()}.json`,
-      buildBackupJson(store.exportData(), files),
-      'application/json',
-    );
-  };
+  // 証憑(IndexedDB)も同梱し、実施日時を記録する(催促バナー・下の状態表示が更新される)
+  const downloadBackup = () => downloadBackupFile(store.exportData());
 
   const onRestoreFile = async (file: File) => {
     const text = await file.text();
@@ -279,6 +269,8 @@ export default function DashboardPage() {
               sub="家事按分で経費から除いた額"
             />
           </div>
+
+          <YearChecklist year={year} />
 
           <Card title={`月次推移(${year}年・売上/経費/損益)`}>
             <BarChart values={summary.monthlySales} />
@@ -468,7 +460,7 @@ export default function DashboardPage() {
               </li>
               <li>
                 消費税は<strong>「消費税」ページ</strong>
-                で税区分別の集計と納付額の試算(本則・簡易・2割特例)ができます(税込経理・概算)。
+                で税区分別の集計と納付額の試算(本則・簡易・2割特例・3割特例)ができます(税込経理・概算)。
               </li>
               <li>
                 集計値は国税庁「確定申告書等作成コーナー」等へ転記するための参考値です。
@@ -478,6 +470,7 @@ export default function DashboardPage() {
           </Card>
 
           <Card title="データ管理(バックアップ)">
+            <DataSafetyStatus />
             <div className="flex flex-wrap items-center gap-3">
               <button type="button" className={btn.primary} onClick={downloadBackup}>
                 ⬇ バックアップをダウンロード(JSON)
@@ -533,5 +526,53 @@ export default function DashboardPage() {
         </div>
       )}
     </>
+  );
+}
+
+/** バックアップの実施状況と、ブラウザの保存領域が永続化されているかの表示 */
+function DataSafetyStatus() {
+  const [lastBackup, setLastBackup] = useState<number | null>(null);
+  const [persisted, setPersisted] = useState<boolean | null>(null);
+  useEffect(() => {
+    const check = () => setLastBackup(readNumber(LAST_BACKUP_KEY));
+    check();
+    void storagePersisted().then(setPersisted);
+    window.addEventListener(BACKUP_DONE_EVENT, check);
+    return () => window.removeEventListener(BACKUP_DONE_EVENT, check);
+  }, []);
+  const days = daysSince(Date.now(), lastBackup);
+  return (
+    <div className="mb-3 grid gap-2 text-xs sm:grid-cols-2">
+      <div
+        className={`rounded-lg px-3 py-2 ${
+          days !== null && days < BACKUP_REMIND_DAYS ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-900'
+        }`}
+      >
+        最終バックアップ(この端末):{' '}
+        <strong>
+          {lastBackup === null
+            ? 'まだありません'
+            : `${new Date(lastBackup).toLocaleDateString('ja-JP')}(${days === 0 ? '今日' : `${days}日前`})`}
+        </strong>
+      </div>
+      <div
+        className={`rounded-lg px-3 py-2 ${
+          persisted ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-600'
+        }`}
+        title="ブラウザは容量不足や長期間の未使用のときにサイトのデータを自動削除することがあります。永続化されていると自動削除の対象外になります"
+      >
+        ブラウザの保存領域:{' '}
+        <strong>
+          {persisted === null
+            ? '確認できません'
+            : persisted
+              ? '永続化済み(自動削除されません)'
+              : '自動削除の可能性あり'}
+        </strong>
+        {persisted === false && (
+          <span className="block">ホーム画面に追加(アプリとしてインストール)すると守られやすくなります。</span>
+        )}
+      </div>
+    </div>
   );
 }

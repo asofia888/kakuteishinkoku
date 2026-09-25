@@ -171,6 +171,24 @@ export function salaryWithholdingFor(year: number): {
  */
 export const SPECIAL20 = { firstYear: 2023, lastYear: 2026 };
 
+/**
+ * 3割特例(令和8年度改正で創設。個人事業者のみ)。2割特例の終了後、
+ * 令和9年分・令和10年分(2027・2028年分)は売上の消費税の3割を納付する。
+ * 対象は2割特例と同じく、インボイス登録がなければ免税事業者だった小規模事業者
+ * (基準期間の課税売上高1,000万円以下など)。
+ */
+export const SPECIAL30 = { firstYear: 2027, lastYear: 2028 };
+
+/**
+ * 小規模事業者の特例(2割特例・3割特例)で、売上の消費税のうち納付する割合(%)。
+ * その年分に特例がなければ null
+ */
+export function smallBusinessSpecialRate(year: number): 20 | 30 | null {
+  if (year >= SPECIAL20.firstYear && year <= SPECIAL20.lastYear) return 20;
+  if (year >= SPECIAL30.firstYear && year <= SPECIAL30.lastYear) return 30;
+  return null;
+}
+
 // ── 減価償却(200%定率法) ────────────────────────────────
 
 /**

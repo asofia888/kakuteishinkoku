@@ -75,7 +75,9 @@ export default function InvoicesPage() {
     setMessage(
       n > 0
         ? `売掛金として計上しました(取引${n}件)。入金時は銀行明細の入金行を「売掛金の回収」にしてください。`
-        : '計上できませんでした。発行日と明細をご確認ください。',
+        : store.lockedYears.includes(Number(inv.issueDate.slice(0, 4)))
+          ? `発行日の${inv.issueDate.slice(0, 4)}年分は申告済み(ロック中)のため計上できません。`
+          : '計上できませんでした。発行日と明細をご確認ください。',
     );
   };
 

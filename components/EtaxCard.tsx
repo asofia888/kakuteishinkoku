@@ -10,6 +10,7 @@ import { today } from '@/lib/format';
 import { IncomeTaxResult } from '@/lib/incometax';
 import { kessanshoExpenseValues } from '@/lib/kessansho';
 import { BalanceSheet } from '@/lib/ledger';
+import { rentBreakdown } from '@/lib/rent';
 import { useStore } from '@/lib/store';
 import { summarizeTax } from '@/lib/tax';
 import { DeductionEntry, IssuerProfile } from '@/lib/types';
@@ -76,6 +77,17 @@ export function EtaxCard({
       };
     });
 
+    // 地代家賃の内訳(支払先ごと。様式は2行まで)
+    const rent = rentBreakdown(store.transactions, year, store.rentPayees)
+      .rows.filter((r) => r.gross > 0)
+      .map((r) => ({
+        name: r.payee.name,
+        address: r.payee.address,
+        property: r.payee.property,
+        rent: r.gross,
+        business: r.business,
+      }));
+
     // 減価償却費の計算(CSV出力と同じ共通の行データを使う)
     const depreciation = depreciationRowsForYear(store.assets, year);
 
@@ -112,6 +124,7 @@ export function EtaxCard({
       monthly: { sales: summary.monthlySales, purchases: monthlyPurchases },
       reduced: { sales: taxSummary.sales8, purchases: taxSummary.purchase8 },
       payroll,
+      rent,
       depreciation,
       bs: {
         opening: {
@@ -229,6 +242,8 @@ export function EtaxCard({
           e-Taxソフト実機での最終確認は、読み込み後の帳票表示で必ず行ってください。
         </li>
         <li>e-Taxソフト(WEB版・SP版)は.xtxの組み込みに対応していません。インストール版をご利用ください。</li>
+        <li>地代家賃の内訳は、上の「地代家賃の内訳」に登録した支払先を2件まで出力します(様式の行数)。</li>
+        <li>半角カタカナ・絵文字などe-Taxで使えない文字は、全角に直すか取り除いて出力します。</li>
         <li>専従者給与・貸倒引当金・製造原価(3ページ目の一部)・売上先/仕入先明細には対応していません。該当がある場合はe-Taxソフト上で追記してください。</li>
         <li>貸借対照表が不一致のまま出力すると、そのままの数字が出ます。先に帳簿・決算書ページでご確認ください。</li>
       </ul>

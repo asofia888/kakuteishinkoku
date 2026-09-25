@@ -282,6 +282,10 @@ export function buildDemoData(): AppData {
     deductions: [],
     payrolls: [],
     yearEndAdjustments: [],
+    lockedYears: [],
+    fundAccounts: [],
+    reconciliations: [],
+    rentPayees: [],
     partners: [
       {
         id: uid(),

@@ -6,7 +6,7 @@ import { Rule, Transaction, TxType, uid } from './types';
  * 主流のため、NFKC(半角カナ→全角カナ・全角英数→半角英数)+ 小文字化で
  * 表記ゆれを吸収してからキーワードを照合する。
  */
-function normalizeForMatch(s: string): string {
+export function normalizeForMatch(s: string): string {
   return s.normalize('NFKC').toLowerCase();
 }
 

@@ -548,6 +548,12 @@ function AssetForm({
               value={draft.disposedDate ?? ''}
               onChange={(e) => set({ disposedDate: e.target.value })}
             />
+            {draft.disposedDate && (
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                売却した場合は、売却代金の入金行の科目を「固定資産の売却代金」にしてください(所得税では譲渡所得のため売上に入れず、
+                課税事業者なら消費税の課税売上になります)。
+              </p>
+            )}
           </div>
         )}
         {draft.method === 'deferred' && (

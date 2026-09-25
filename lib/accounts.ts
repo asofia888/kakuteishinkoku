@@ -83,6 +83,9 @@ export const SETTLEMENT_ACCOUNTS: Account[] = [
   { id: 'fund_transfer', label: '資金移動(預金⇔現金)', type: 'expense' },
   // 給与から天引きした源泉所得税・社会保険料などを納めたとき
   { id: 'deposit_payment', label: '預り金の納付(源泉所得税・社会保険料)', type: 'expense' },
+  // 事業用の車両・機械などの売却代金。所得税では譲渡所得(事業所得の売上ではない)のため
+  // 事業主借として帳簿から外すが、消費税では課税売上になる
+  { id: 'asset_sale', label: '固定資産の売却代金(振替・消費税は課税売上)', type: 'income' },
   // 事業用の融資(日本政策金融公庫・銀行など)の入金。売上ではなく負債の増加
   { id: 'loan_receipt', label: '借入金の借入れ(振替)', type: 'income' },
   // 融資の返済。元金は負債の減少、うち利息は利子割引料(必要経費)として取引一覧で内訳を入力する

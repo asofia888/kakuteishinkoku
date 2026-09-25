@@ -43,7 +43,20 @@ const depositTx: Transaction = {
 const goodData: AppData = {
   transactions: [goodTx, depositTx],
   rules: [{ id: 'r1', keyword: 'amazon', account: 'supplies' }],
-  anbunSettings: [{ id: 's1', account: 'rent', type: 'fixed', value: 30000 }],
+  anbunSettings: [
+    { id: 's1', account: 'rent', type: 'fixed', value: 30000 },
+    // 同じ科目でも適用開始年が違えば別の設定として残る(年度別の按分)
+    { id: 's2', account: 'rent', fromYear: 2026, type: 'percent', value: 40 },
+  ],
+  lockedYears: [2025],
+  fundAccounts: [
+    { id: 'fa-1', fund: 'bank', name: '楽天銀行', createdAt: 1 },
+    { id: 'fa-2', fund: 'bank', name: '地方銀行', createdAt: 2 },
+  ],
+  reconciliations: [{ id: 'rc-1', target: 'fa-1', date: '2026-03-31', balance: 812345, createdAt: 3 }],
+  rentPayees: [
+    { id: 'rp-1', name: '大家 一郎', address: '東京都新宿区1-1', property: '自宅兼事務所', keyword: '', createdAt: 4 },
+  ],
   openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 }],
   taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
   invoices: [
@@ -301,6 +314,26 @@ describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
     expect(data.transactions[3].interest).toBeUndefined();
     expect(data.transactions[4].interest).toBeUndefined();
     expect(data.openingBalances[0].loan).toBe(3000000);
+  });
+
+  it('申告済みロックの年と按分の適用開始年: 不正値は捨て、重複はまとめる', () => {
+    const data = sanitizeAppData({
+      transactions: [],
+      rules: [],
+      anbunSettings: [
+        { id: 'x', account: 'rent', type: 'percent', value: 30, fromYear: 'きょねん' },
+        { id: 'y', account: 'rent', type: 'percent', value: 50, fromYear: 2026 },
+        { id: 'z', account: 'rent', type: 'percent', value: 60, fromYear: 2026 }, // 同じ科目・年 → 後勝ち
+      ],
+      lockedYears: [2025, 2024, 2025, 1999, 2025.5, '2023'],
+    })!;
+    expect(data.lockedYears).toEqual([2024, 2025]);
+    expect(data.anbunSettings.map((s) => [s.id, s.fromYear])).toEqual([
+      ['x', undefined],
+      ['z', 2026],
+    ]);
+    // 旧データ(lockedYears なし)はロックなし
+    expect(sanitizeAppData({ transactions: [], rules: [], anbunSettings: [] })!.lockedYears).toEqual([]);
   });
 
   it('taxCategory と qualifiedInvoice を保持し、不正値は捨てる', () => {

@@ -6,7 +6,21 @@ import { repaymentInterest } from '@/lib/accounts';
 import { availableYears, transactionsOfYear } from '@/lib/aggregate';
 import { bookValueAtStart, isDeferred } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
-import { dateLabel, yen } from '@/lib/format';
+import { dateLabel, today, yen } from '@/lib/format';
+import {
+  bookBalanceAt,
+  hasMultiple,
+  lineLabel,
+  lineMatcher,
+  negativeBalances,
+  reconTargets,
+  resolveReconTarget,
+  SUB_FUND_LABELS,
+  SubFund,
+  subAccountsOf,
+  subClosingBalances,
+  subOpening,
+} from '@/lib/fundAccounts';
 import {
   BalanceSheet,
   balanceSheetToCsv,
@@ -16,14 +30,17 @@ import {
   inventoryAmount,
   journalForYear,
   journalToCsv,
+  JournalLine,
   ledgerAccountOptions,
   ledgerLineLabel,
 } from '@/lib/ledger';
 import { useStore } from '@/lib/store';
-import { OpeningBalance } from '@/lib/types';
+import { FundAccount, OpeningBalance, Reconciliation } from '@/lib/types';
+
+type ObKey = Exclude<keyof OpeningBalance, 'year' | 'subBalances'>;
 
 /** 期首残高の入力フィールド定義 */
-const OB_FIELDS: { key: keyof Omit<OpeningBalance, 'year'>; label: string; hint: string }[] = [
+const OB_FIELDS: { key: ObKey; label: string; hint: string }[] = [
   { key: 'cash', label: '現金', hint: '事業用の手元現金' },
   { key: 'bank', label: '普通預金', hint: '事業用口座の1/1残高' },
   { key: 'receivable', label: '売掛金', hint: '前年に計上し未回収の請求' },
@@ -82,13 +99,8 @@ export default function BooksPage() {
     [store.transactions, year],
   );
 
-  // 期首残高が前年末の残高と食い違っていないか(前年の帳簿を後から修正すると起きる)
-  const openingMismatch = useMemo(() => {
-    if (!opening) return false;
-    const hasPrev =
-      store.openingBalances.some((ob) => ob.year === year - 1) ||
-      transactionsOfYear(store.transactions, year - 1).length > 0;
-    if (!hasPrev) return false;
+  /** 前年末の貸借対照表から作る期首残高(口座を分けていれば口座別の残高も繰り越す) */
+  const carryFromPrevYear = () => {
     const prevOpening = store.openingBalances.find((ob) => ob.year === year - 1);
     const prevBs = buildBalanceSheet(
       store.transactions,
@@ -97,13 +109,39 @@ export default function BooksPage() {
       store.assets,
       store.inventories,
     );
-    const carry = carryForwardOpening(prevBs);
-    return OB_FIELDS.some((f) => carry[f.key] !== opening[f.key]);
-  }, [opening, store.openingBalances, store.transactions, store.assets, store.inventories, year]);
+    const subs = subClosingBalances(store.transactions, year - 1, prevOpening, store.fundAccounts);
+    const carry: OpeningBalance = {
+      ...carryForwardOpening(prevBs),
+      ...(Object.keys(subs).length > 0 ? { subBalances: subs } : {}),
+    };
+    return { carry, prevBs };
+  };
+
+  // 期首残高が前年末の残高と食い違っていないか(前年の帳簿を後から修正すると起きる)
+  const openingMismatch = useMemo(() => {
+    if (!opening) return false;
+    const hasPrev =
+      store.openingBalances.some((ob) => ob.year === year - 1) ||
+      transactionsOfYear(store.transactions, year - 1).length > 0;
+    if (!hasPrev) return false;
+    const { carry } = carryFromPrevYear();
+    const subMismatch = Object.entries(carry.subBalances ?? {}).some(([id, v]) => {
+      const a = store.fundAccounts.find((x) => x.id === id);
+      return a !== undefined && subOpening(opening, store.fundAccounts, a.fund, id) !== v;
+    });
+    return subMismatch || OB_FIELDS.some((f) => carry[f.key] !== opening[f.key]);
+    // carryFromPrevYear は下記の依存から決まる
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opening, store.openingBalances, store.transactions, store.assets, store.inventories, store.fundAccounts, year]);
 
   // 借入金: 期末残高がマイナス(期首残高の登録漏れ・利息を含めた全額を元金にしている等)と、
   // 利息の内訳が未入力の返済(利息は利子割引料として経費になる)
   const loanClosing = bs.liabilities.find((r) => r.id === 'loan')?.closing ?? 0;
+  // 現金・預金の日末残高のマイナス(記帳漏れの典型)
+  const negatives = useMemo(
+    () => negativeBalances(store.transactions, year, opening, store.fundAccounts),
+    [store.transactions, year, opening, store.fundAccounts],
+  );
   const repaymentsWithoutInterest = useMemo(
     () =>
       transactionsOfYear(store.transactions, year).filter(
@@ -153,24 +191,33 @@ export default function BooksPage() {
 
         {message && <Alert tone="success">{message}</Alert>}
 
+        <YearLockCard
+          year={year}
+          locked={store.lockedYears.includes(year)}
+          onChange={(locked) => {
+            store.setYearLocked(year, locked);
+            setMessage(
+              locked
+                ? `${year}年分を申告済みとしてロックしました。この年の帳簿の数字が変わる変更は保存されません。`
+                : `${year}年分のロックを解除しました。修正が終わったら再びロックしてください。`,
+            );
+          }}
+        />
+
+        <FundAccountsCard />
+
         <OpeningBalanceCard
-          key={`${year}:${opening ? OB_FIELDS.map((f) => opening[f.key]).join('-') : 'none'}`}
+          key={`${year}:${opening ? `${OB_FIELDS.map((f) => opening[f.key]).join('-')}:${JSON.stringify(opening.subBalances ?? {})}` : 'none'}:${store.fundAccounts.map((a) => a.id).join(',')}`}
           year={year}
           opening={opening}
+          fundAccounts={store.fundAccounts}
           hasPrevData={
             store.openingBalances.some((ob) => ob.year === year - 1) ||
             transactionsOfYear(store.transactions, year - 1).length > 0
           }
           onCarryForward={() => {
-            const prevOpening = store.openingBalances.find((ob) => ob.year === year - 1);
-            const prevBs = buildBalanceSheet(
-              store.transactions,
-              year - 1,
-              prevOpening,
-              store.assets,
-              store.inventories,
-            );
-            store.setOpeningBalance(carryForwardOpening(prevBs));
+            const { carry, prevBs } = carryFromPrevYear();
+            store.setOpeningBalance(carry);
             setMessage(
               `${year - 1}年末の貸借対照表から${year}年の期首残高を設定しました(元入金 ${yen(prevBs.nextCapital)})。`,
             );
@@ -186,6 +233,22 @@ export default function BooksPage() {
             {year}年の期首残高が<strong>前年末の貸借対照表の残高と一致していません</strong>。
             前年の取引を後から修正した場合に起きます。「前年末の残高から自動設定」を押すと揃えられます
             (意図的にずらしている場合はこのままで構いません)。
+          </Alert>
+        )}
+
+        {negatives.length > 0 && (
+          <Alert tone="warning">
+            {negatives.map((n) => (
+              <div key={n.target}>
+                <strong>{n.label}</strong>の残高が{dateLabel(n.firstDate)}にマイナスになっています(最低
+                {yen(n.lowest)}・{dateLabel(n.lowestDate)})。
+              </div>
+            ))}
+            <div className="mt-1 text-xs">
+              現金・預金の残高がマイナスになることはないため、記帳漏れの可能性が高いです(私費で立て替えた経費の
+              「事業主借」の計上漏れ、現金売上・預け入れの漏れ、日付の誤りなど)。期首残高の登録漏れでも起きます。
+              税務調査でも真っ先に確認される点です。
+            </div>
           </Alert>
         )}
 
@@ -221,15 +284,90 @@ export default function BooksPage() {
 
         <BalanceSheetCard bs={bs} />
 
+        <ReconciliationCard key={year} year={year} />
+
         <JournalCard
           journal={journal}
           year={year}
-          onDownload={() => downloadText(`仕訳帳_${year}.csv`, journalToCsv(journal))}
+          label={(l) => lineLabel(l, store.fundAccounts)}
+          onDownload={() =>
+            downloadText(
+              `仕訳帳_${year}.csv`,
+              journalToCsv(journal, (l) => lineLabel(l, store.fundAccounts)),
+            )
+          }
         />
 
-        <GeneralLedgerCard journal={journal} openings={ledgerOpenings} capital={bs.capital} />
+        <GeneralLedgerCard
+          journal={journal}
+          openings={ledgerOpenings}
+          opening={opening}
+          fundAccounts={store.fundAccounts}
+          capital={bs.capital}
+        />
       </div>
     </>
+  );
+}
+
+/**
+ * 申告済みロックのカード。申告後に取引の修正・按分の変更などで
+ * 申告した年の帳簿が静かに書き換わるのを防ぐ(修正申告のときだけ解除する)。
+ */
+function YearLockCard({
+  year,
+  locked,
+  onChange,
+}: {
+  year: number;
+  locked: boolean;
+  onChange: (locked: boolean) => void;
+}) {
+  return locked ? (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+      <span className="font-medium">🔒 {year}年分は申告済み(ロック中)です。</span>
+      <span className="text-xs text-sky-800">
+        取引・固定資産・棚卸・期首残高・按分設定の変更で、この年の帳簿の数字が変わるものは保存されません
+        (承認や証憑の添付はできます)。
+      </span>
+      <button
+        type="button"
+        className={`${btn.small} ml-auto`}
+        onClick={() => {
+          if (
+            confirm(
+              `${year}年分のロックを解除しますか?\n修正申告・更正の請求などで帳簿を直す場合だけ解除し、終わったら再びロックしてください。`,
+            )
+          ) {
+            onChange(false);
+          }
+        }}
+      >
+        ロックを解除
+      </button>
+    </div>
+  ) : (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+      <span>
+        {year}年分の申告が済んだら、帳簿を<strong>申告済みとしてロック</strong>
+        できます。以後、この年の数字が変わる変更(取引の修正・按分割合の変更など)は保存されなくなります。
+      </span>
+      <button
+        type="button"
+        className={`${btn.small} ml-auto`}
+        onClick={() => {
+          if (
+            confirm(
+              `${year}年分を申告済みとしてロックしますか?\nこの年の帳簿の数字が変わる変更は保存されなくなります(解除はいつでもできます)。`,
+            )
+          ) {
+            onChange(true);
+          }
+        }}
+      >
+        🔒 {year}年分を申告済みにする
+      </button>
+    </div>
   );
 }
 
@@ -304,20 +442,39 @@ function InventoryCard({
 function OpeningBalanceCard({
   year,
   opening,
+  fundAccounts,
   hasPrevData,
   onSave,
   onCarryForward,
 }: {
   year: number;
   opening: OpeningBalance | undefined;
+  fundAccounts: FundAccount[];
   hasPrevData: boolean;
   onSave: (ob: OpeningBalance) => void;
   onCarryForward: () => void;
 }) {
-  // 表示中の年が変わったら入力値を作り直す(key={year} で親から強制リセット)
+  // 口座を2つ以上に分けている資金(普通預金・カード)は、口座ごとの入力欄に置き換える
+  const splitFunds = (['bank', 'card'] as SubFund[]).filter((f) => hasMultiple(fundAccounts, f));
+  const fields: { key: string; label: string; hint: string }[] = OB_FIELDS.flatMap((f) =>
+    (splitFunds as string[]).includes(f.key)
+      ? subAccountsOf(fundAccounts, f.key as SubFund).map((a) => ({
+          key: `sub:${a.id}`,
+          label: `${f.label}(${a.name})`,
+          hint: f.hint,
+        }))
+      : [f],
+  );
+
+  // 表示中の年が変わったら入力値を作り直す(key で親から強制リセット)
   const [values, setValues] = useState<Record<string, string>>(() => {
     const v: Record<string, string> = {};
     for (const f of OB_FIELDS) v[f.key] = String(opening?.[f.key] ?? 0);
+    for (const fund of splitFunds) {
+      for (const a of subAccountsOf(fundAccounts, fund)) {
+        v[`sub:${a.id}`] = String(subOpening(opening, fundAccounts, fund, a.id));
+      }
+    }
     return v;
   });
 
@@ -326,14 +483,19 @@ function OpeningBalanceCard({
     const n = Number(values[key]);
     return Number.isFinite(n) ? Math.round(n) : 0;
   };
+  /** 資金の合計(口座を分けている資金は口座の合計) */
+  const total = (fund: ObKey) =>
+    (splitFunds as string[]).includes(fund)
+      ? subAccountsOf(fundAccounts, fund as SubFund).reduce((s, a) => s + num(`sub:${a.id}`), 0)
+      : num(fund);
   const capital =
-    num('cash') +
-    num('bank') +
-    num('receivable') -
-    num('card') -
-    num('payable') -
-    num('loan') -
-    num('deposit');
+    total('cash') +
+    total('bank') +
+    total('receivable') -
+    total('card') -
+    total('payable') -
+    total('loan') -
+    total('deposit');
 
   return (
     <Card
@@ -349,20 +511,25 @@ function OpeningBalanceCard({
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          const subBalances: Record<string, number> = {};
+          for (const fund of splitFunds) {
+            for (const a of subAccountsOf(fundAccounts, fund)) subBalances[a.id] = num(`sub:${a.id}`);
+          }
           onSave({
             year,
-            cash: num('cash'),
-            bank: num('bank'),
-            receivable: num('receivable'),
-            card: num('card'),
-            payable: num('payable'),
-            loan: num('loan'),
-            deposit: num('deposit'),
+            cash: total('cash'),
+            bank: total('bank'),
+            receivable: total('receivable'),
+            card: total('card'),
+            payable: total('payable'),
+            loan: total('loan'),
+            deposit: total('deposit'),
+            ...(splitFunds.length > 0 ? { subBalances } : {}),
           });
         }}
         className="flex flex-wrap items-end gap-3"
       >
-        {OB_FIELDS.map((f) => (
+        {fields.map((f) => (
           <div key={f.key}>
             <label htmlFor={`book-opening-${f.key}`} className="mb-1 block text-xs font-medium text-slate-500" title={f.hint}>
               {f.label}
@@ -505,10 +672,13 @@ function BalanceSheetCard({ bs }: { bs: BalanceSheet }) {
 function JournalCard({
   journal,
   year,
+  label,
   onDownload,
 }: {
   journal: ReturnType<typeof journalForYear>;
   year: number;
+  /** 勘定の表示名(口座を分けていれば「普通預金(楽天銀行)」) */
+  label: (l: JournalLine) => string;
   onDownload: () => void;
 }) {
   const [visible, setVisible] = useState(100);
@@ -543,7 +713,7 @@ function JournalCard({
                     <td className="tabular py-1.5 pr-2 whitespace-nowrap">{dateLabel(e.date)}</td>
                     <td className="px-2 py-1.5">
                       {e.debits.map((l, i) => (
-                        <div key={i}>{ledgerLineLabel(l.account)}</div>
+                        <div key={i}>{label(l)}</div>
                       ))}
                     </td>
                     <td className="tabular px-2 py-1.5 text-right whitespace-nowrap">
@@ -553,7 +723,7 @@ function JournalCard({
                     </td>
                     <td className="px-2 py-1.5">
                       {e.credits.map((l, i) => (
-                        <div key={i}>{ledgerLineLabel(l.account)}</div>
+                        <div key={i}>{label(l)}</div>
                       ))}
                     </td>
                     <td className="tabular px-2 py-1.5 text-right whitespace-nowrap">
@@ -586,21 +756,53 @@ function JournalCard({
 function GeneralLedgerCard({
   journal,
   openings,
+  opening,
+  fundAccounts,
   capital,
 }: {
   journal: ReturnType<typeof journalForYear>;
   /** B/S勘定の期首残高(損益科目・事業主貸借は期首0) */
   openings: Record<string, number>;
+  /** その年の期首残高(口座別の期首残高の算出用) */
+  opening: OpeningBalance | undefined;
+  fundAccounts: FundAccount[];
   capital: number;
 }) {
+  // 選択値は勘定ID、または口座ごとの補助元帳 `sub:<口座ID>`
   const [account, setAccount] = useState('bank');
-  const options = useMemo(() => ledgerAccountOptions(journal), [journal]);
+  const options = useMemo(() => {
+    const base = ledgerAccountOptions(journal);
+    // 口座を分けている資金は、合計の直後に口座ごとの補助元帳を並べる
+    return base.flatMap((o) =>
+      hasMultiple(fundAccounts, o.id)
+        ? [
+            o,
+            ...subAccountsOf(fundAccounts, o.id as SubFund).map((a) => ({
+              id: `sub:${a.id}`,
+              label: `└ ${o.label}(${a.name})`,
+            })),
+          ]
+        : [o],
+    );
+  }, [journal, fundAccounts]);
 
-  const openingBalance = openings[account] ?? 0;
+  const subAccount = account.startsWith('sub:')
+    ? fundAccounts.find((a) => a.id === account.slice(4))
+    : undefined;
+  const ledgerAccount = subAccount ? subAccount.fund : account.startsWith('sub:') ? 'bank' : account;
+  const openingBalance = subAccount
+    ? subOpening(opening, fundAccounts, subAccount.fund, subAccount.id)
+    : (openings[ledgerAccount] ?? 0);
 
   const rows = useMemo(
-    () => generalLedger(journal, account, openingBalance),
-    [journal, account, openingBalance],
+    () =>
+      generalLedger(
+        journal,
+        ledgerAccount,
+        openingBalance,
+        subAccount ? lineMatcher(fundAccounts, subAccount.fund, subAccount.id) : undefined,
+      ),
+    [journal, ledgerAccount, openingBalance, subAccount, fundAccounts],
   );
 
   return (
@@ -618,7 +820,7 @@ function GeneralLedgerCard({
     >
       {rows.length === 0 ? (
         <EmptyState>
-          「{ledgerLineLabel(account)}」の記帳はこの年にありません。
+          「{subAccount ? `${ledgerLineLabel(subAccount.fund)}(${subAccount.name})` : ledgerLineLabel(ledgerAccount)}」の記帳はこの年にありません。
           {openingBalance > 0 && ` 期首残高: ${yen(openingBalance)}`}
         </EmptyState>
       ) : (
@@ -665,6 +867,290 @@ function GeneralLedgerCard({
       )}
       <p className="mt-3 text-xs text-slate-500">
         ※元入金({yen(capital)})は期首の 資産 − 負債 として自動計算され、元帳には登場しません。
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * 口座・カード(補助科目)の登録。普通預金・カードを口座ごとに分けると、
+ * 取引一覧で口座を選べるようになり、口座ごとの元帳・期首残高・残高照合ができる
+ */
+function FundAccountsCard() {
+  const store = useStore();
+  const [fund, setFund] = useState<SubFund>('bank');
+  const [name, setName] = useState('');
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+
+  return (
+    <Card title="口座・クレジットカード(補助科目)">
+      <form
+        className="flex flex-wrap items-end gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!name.trim()) return;
+          store.addFundAccount(fund, name);
+          setName('');
+        }}
+      >
+        <div>
+          <label htmlFor="fa-fund" className="mb-1 block text-xs font-medium text-slate-500">
+            種類
+          </label>
+          <select
+            id="fa-fund"
+            className={selectCls}
+            value={fund}
+            onChange={(e) => setFund(e.target.value as SubFund)}
+          >
+            <option value="bank">普通預金(銀行口座)</option>
+            <option value="card">クレジットカード</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="fa-name" className="mb-1 block text-xs font-medium text-slate-500">
+            名前
+          </label>
+          <input
+            id="fa-name"
+            type="text"
+            maxLength={30}
+            className={`${input} w-56`}
+            placeholder={fund === 'bank' ? '例: 楽天銀行' : '例: 三井住友カード'}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <button type="submit" className={btn.secondary} disabled={!name.trim()}>
+          ＋ 追加
+        </button>
+      </form>
+
+      {store.fundAccounts.length > 0 && (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          {(['bank', 'card'] as SubFund[]).map((f) => {
+            const subs = subAccountsOf(store.fundAccounts, f);
+            if (subs.length === 0) return null;
+            return (
+              <div key={f}>
+                <h3 className="mb-1 text-xs font-semibold text-slate-500">{SUB_FUND_LABELS[f]}</h3>
+                <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+                  {subs.map((a, i) => (
+                    <li key={a.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+                      {editing?.id === a.id ? (
+                        <input
+                          aria-label={`${a.name} の新しい名前`}
+                          className={`${input} w-40 py-1`}
+                          value={editing.name}
+                          maxLength={30}
+                          autoFocus
+                          onChange={(e) => setEditing({ id: a.id, name: e.target.value })}
+                          onBlur={() => {
+                            store.renameFundAccount(a.id, editing.name);
+                            setEditing(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') e.currentTarget.blur();
+                          }}
+                        />
+                      ) : (
+                        <span className="font-medium">{a.name}</span>
+                      )}
+                      {i === 0 && (
+                        <span
+                          className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500"
+                          title="口座の指定がない取引は、この口座として扱われます"
+                        >
+                          既定
+                        </span>
+                      )}
+                      <span className="ml-auto flex gap-1">
+                        <button type="button" className={btn.small} onClick={() => setEditing({ id: a.id, name: a.name })}>
+                          名前を変更
+                        </button>
+                        <button
+                          type="button"
+                          className={btn.danger}
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `「${a.name}」を削除しますか?\nこの口座を指定していた取引は、既定の口座として扱われます(取引は消えません)。`,
+                              )
+                            ) {
+                              store.deleteFundAccount(a.id);
+                            }
+                          }}
+                        >
+                          削除
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
+        事業用の口座やカードが複数あるときに登録します。2つ以上登録すると、取引一覧・CSV取込で口座を選べるようになり、
+        口座ごとの元帳(補助元帳)・期首残高・残高照合ができます。貸借対照表は合計で表示されます。
+        最初に登録した口座が<strong>既定</strong>になり、口座を指定していない取引(登録前の取引を含む)はこの口座として扱われます。
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * 残高照合。通帳・カード明細の残高を入力して帳簿残高と突き合わせ、記録を残す。
+ * 後から取引を直して食い違いが生じると、記録の行が「差額あり」に変わる
+ */
+function ReconciliationCard({ year }: { year: number }) {
+  const store = useStore();
+  const targets = reconTargets(store.fundAccounts);
+  const [target, setTarget] = useState(targets[1]?.id ?? 'cash');
+  const [date, setDate] = useState(() => (today().startsWith(`${year}-`) ? today() : `${year}-12-31`));
+  const [balance, setBalance] = useState('');
+
+  const records = store.reconciliations
+    .filter((r) => r.date.startsWith(`${year}-`))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+
+  const preview =
+    /^\d{4}-\d{2}-\d{2}$/.test(date) && date.startsWith(`${year}-`)
+      ? bookBalanceAt(store.transactions, store.openingBalances, store.fundAccounts, target, date)
+      : null;
+
+  const rowOf = (r: Reconciliation) => {
+    const t = resolveReconTarget(store.fundAccounts, r.target);
+    const book = bookBalanceAt(store.transactions, store.openingBalances, store.fundAccounts, r.target, r.date);
+    return { label: t?.label ?? '(削除された口座)', book: book?.balance ?? null, diff: book ? r.balance - book.balance : null };
+  };
+  const mismatches = records.map(rowOf).filter((x) => x.diff !== null && x.diff !== 0).length;
+
+  return (
+    <Card title={`残高照合(${year}年)`}>
+      <form
+        className="flex flex-wrap items-end gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const n = Math.round(Number(balance));
+          if (!Number.isFinite(n) || balance.trim() === '' || !preview) return;
+          store.addReconciliation({ target, date, balance: n });
+          setBalance('');
+        }}
+      >
+        <div>
+          <label htmlFor="rc-target" className="mb-1 block text-xs font-medium text-slate-500">
+            口座・カード
+          </label>
+          <select id="rc-target" className={selectCls} value={target} onChange={(e) => setTarget(e.target.value)}>
+            {targets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="rc-date" className="mb-1 block text-xs font-medium text-slate-500">
+            照合日
+          </label>
+          <input
+            id="rc-date"
+            type="date"
+            className={input}
+            min={`${year}-01-01`}
+            max={`${year}-12-31`}
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="rc-balance" className="mb-1 block text-xs font-medium text-slate-500">
+            {resolveReconTarget(store.fundAccounts, target)?.fund === 'card' ? '明細の未払残高' : '通帳・実際の残高'}
+          </label>
+          <input
+            id="rc-balance"
+            type="number"
+            className={`${input} w-36 text-right`}
+            value={balance}
+            onChange={(e) => setBalance(e.target.value)}
+          />
+        </div>
+        <div className="text-sm">
+          <div className="text-xs font-medium text-slate-500">帳簿残高(照合日の終わり)</div>
+          <div className="tabular mt-1 font-semibold">{preview ? yen(preview.balance) : '—'}</div>
+        </div>
+        <button type="submit" className={btn.primary} disabled={!preview || balance.trim() === ''}>
+          照合して記録
+        </button>
+      </form>
+      {preview && !preview.hasOpening && (
+        <p className="mt-2 text-xs text-amber-700">
+          ※{year}年の期首残高が未登録のため、帳簿残高は1/1を0円として計算しています。
+        </p>
+      )}
+
+      {mismatches > 0 && (
+        <div className="mt-3">
+          <Alert tone="warning">
+            差額のある照合が{mismatches}件あります。差額は記帳漏れ・二重計上・日付の誤りの手がかりです
+            (照合日までの取引を明細と見比べてください)。
+          </Alert>
+        </div>
+      )}
+
+      {records.length > 0 && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
+                <th className="py-2 pr-2 font-medium">照合日</th>
+                <th className="px-2 py-2 font-medium">口座・カード</th>
+                <th className="px-2 py-2 text-right font-medium">明細の残高</th>
+                <th className="px-2 py-2 text-right font-medium">帳簿残高</th>
+                <th className="px-2 py-2 font-medium">結果</th>
+                <th className="px-2 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((r) => {
+                const x = rowOf(r);
+                return (
+                  <tr key={r.id} className="border-b border-slate-100">
+                    <td className="tabular py-1.5 pr-2 whitespace-nowrap">{dateLabel(r.date)}</td>
+                    <td className="px-2 py-1.5">{x.label}</td>
+                    <td className="tabular px-2 py-1.5 text-right">{yen(r.balance)}</td>
+                    <td className="tabular px-2 py-1.5 text-right">{x.book !== null ? yen(x.book) : '—'}</td>
+                    <td className="px-2 py-1.5">
+                      {x.diff === null ? (
+                        <span className="text-xs text-slate-500">—</span>
+                      ) : x.diff === 0 ? (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">✓ 一致</span>
+                      ) : (
+                        <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[11px] font-medium text-rose-700">
+                          ⚠ 差額 {yen(x.diff)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      <button type="button" className={btn.danger} onClick={() => store.deleteReconciliation(r.id)}>
+                        削除
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
+        月末などに通帳・カード明細の残高と帳簿残高を突き合わせ、一致を確認した記録を残します(記帳漏れ・二重計上の発見に有効)。
+        記録後に取引を直して帳簿残高が変わると、その記録は「差額」に変わって知らせます。
+        差額 = 明細の残高 − 帳簿残高。現金・預金ならプラスは入金、マイナスは出金の記帳漏れ、
+        カードならプラスは利用(購入)、マイナスは引落しの記帳漏れの可能性があります。
       </p>
     </Card>
   );

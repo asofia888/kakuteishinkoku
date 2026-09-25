@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EXCLUDED_ACCOUNT } from './accounts';
-import { applyAnbun } from './anbun';
+import { anbunSettingFor, applyAnbun } from './anbun';
 import { AnbunSetting, Transaction } from './types';
 
 let seq = 0;
@@ -102,5 +102,40 @@ describe('applyAnbun: 対象外の取引', () => {
     const txs = [tx({ date: '2026-01-25', amount: 320000, type: 'income', account: 'sales' })];
     const out = applyAnbun(txs, [percent40]);
     expect(out[0]).toBe(txs[0]);
+  });
+});
+
+describe('年度別の按分設定(適用開始年)', () => {
+  const all30: AnbunSetting = { id: 'a', account: 'rent', type: 'percent', value: 30 };
+  const from2026: AnbunSetting = { id: 'b', account: 'rent', type: 'percent', value: 50, fromYear: 2026 };
+  const from2028: AnbunSetting = { id: 'c', account: 'rent', type: 'percent', value: 60, fromYear: 2028 };
+
+  it('取引の年に対して「適用開始年がその年以前で最も新しい」設定を使う', () => {
+    const list = [from2028, all30, from2026];
+    expect(anbunSettingFor(list, 2024)).toBe(all30);
+    expect(anbunSettingFor(list, 2025)).toBe(all30);
+    expect(anbunSettingFor(list, 2026)).toBe(from2026);
+    expect(anbunSettingFor(list, 2027)).toBe(from2026);
+    expect(anbunSettingFor(list, 2030)).toBe(from2028);
+    // 適用開始年より前しかない場合は按分しない
+    expect(anbunSettingFor([from2026], 2025)).toBeUndefined();
+  });
+
+  it('引っ越しで割合が変わっても、変わる前の年の経費はそのまま', () => {
+    const txs = [
+      tx({ date: '2025-12-25', amount: 100000, type: 'expense', account: 'rent' }),
+      tx({ date: '2026-01-25', amount: 100000, type: 'expense', account: 'rent' }),
+    ];
+    const before = applyAnbun(txs, [all30]);
+    const after = applyAnbun(before, [all30, from2026]);
+    expect(after[0].businessAmount).toBe(30000); // 2025年は30%のまま
+    expect(after[0]).toBe(before[0]); // オブジェクトも変わらない(再描画・ロック判定に影響しない)
+    expect(after[1].businessAmount).toBe(50000);
+  });
+
+  it('適用開始年の設定だけがある科目は、それより前の年は全額経費', () => {
+    const [t] = applyAnbun([tx({ date: '2025-06-01', amount: 10000, type: 'expense', account: 'rent' })], [from2026]);
+    expect(t.businessAmount).toBe(10000);
+    expect(t.anbunApplied).toBe(false);
   });
 });

@@ -297,8 +297,10 @@ export function FilingSheets({
                 <FormRow label="復興特別所得税額(㉛ × 2.1%)" value={tax.reconstructionTax} />
                 <FormRow label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
                 <FormRow label="源泉徴収税額" value={deduction.withholding || null} />
+                <FormRow label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
+                <FormRow label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />
                 <FormRow
-                  label={tax.balanceDue >= 0 ? '納める税金(100円未満切捨て)' : '還付される税金'}
+                  label={tax.balanceDue >= 0 ? '第3期分の税額 ── 納める税金' : '第3期分の税額 ── 還付される税金'}
                   value={Math.abs(tax.balanceDue)}
                   strong
                 />
@@ -306,7 +308,7 @@ export function FilingSheets({
             </table>
             <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
               社会保険料控除・生命保険料控除などの金額は所得税シミュレーションの入力値です。
-              予定納税(第1期・第2期)がある場合は本アプリでは未管理のため、該当欄で差し引いてください。
+              予定納税額・純損失の繰越控除も所得税シミュレーションの入力値です(繰越控除は第四表の記載が必要)。
               住民税・事業税は申告書第二表と住民税欄の記入が別途必要です。
             </p>
           </div>

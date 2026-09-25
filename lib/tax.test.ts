@@ -127,7 +127,7 @@ describe('summarizeTax: 年間集計', () => {
     // 簡易(第5種50%): 300,000 - 150,000
     expect(s.paySimplified).toBe(150_000);
     // 2割特例: 300,000 × 20%
-    expect(s.paySpecial20).toBe(60_000);
+    expect(s.paySpecial).toBe(60_000);
     expect(s.paySelected).toBe(277_000); // method: general
   });
 
@@ -181,12 +181,21 @@ describe('summarizeTax: 年間集計', () => {
     expect(r2.localTax).toBe(47_400);
     expect(r2.totalDue).toBe(215_800);
 
-    // 期限外(2027年分)の2割特例は本則へ読み替え
+    // 2027年分は3割特例: 特別控除70% = 589,680 → 差引 252,720 → 252,700
+    // 譲渡割 252,700×22/78 = 71,274.3… → 71,200
     const txs2027 = txs.map((t) => ({ ...t, date: '2027-05-01' }));
-    const r3 = calcTaxReturn(txs2027, 2027, { taxable: true, method: 'special20', simplifiedType: 1 });
+    const r30 = calcTaxReturn(txs2027, 2027, { taxable: true, method: 'special20', simplifiedType: 1 });
+    expect(r30.applied).toBe('special20');
+    expect(r30.deductibleNational).toBe(589_680);
+    expect(r30.netNational).toBe(252_700);
+    expect(r30.localTax).toBe(71_200);
+
+    // 特例の終了後(2029年分)は本則へ読み替え
+    const txs2029 = txs.map((t) => ({ ...t, date: '2029-05-01' }));
+    const r3 = calcTaxReturn(txs2029, 2029, { taxable: true, method: 'special20', simplifiedType: 1 });
     expect(r3.applied).toBe('general');
-    // 2027年の適格なし仕入は経過措置70%(令和8年度改正): 39,000×70% = 27,300 → 控除 417,300
-    expect(r3.deductibleNational).toBe(417_300);
+    // 2029年5月の適格なし仕入は経過措置50%(令和8年度改正): 39,000×50% = 19,500 → 控除 409,500
+    expect(r3.deductibleNational).toBe(409_500);
   });
 
   it('申告書ベース: 控除不足(還付)は円単位のまま・地方も22/78で還付', () => {
@@ -199,21 +208,26 @@ describe('summarizeTax: 年間集計', () => {
     expect(r.totalDue).toBe(-100_000);
   });
 
-  it('2割特例は個人事業者は2026年分まで。期限外の年分は本則課税へフォールバックする', () => {
+  it('2割特例は2026年分まで、個人の2027・2028年分は3割特例、それ以外は本則課税へフォールバック', () => {
     const sale = (date: string) =>
       tx({ description: '報酬', type: 'income', account: 'sales', amount: 1_100_000, date });
-    const special20: TaxSettings = { taxable: true, method: 'special20', simplifiedType: 5 };
+    const special: TaxSettings = { taxable: true, method: 'special20', simplifiedType: 5 };
 
-    const in2026 = summarizeTax([sale('2026-06-15')], 2026, special20);
-    expect(in2026.special20Available).toBe(true);
-    expect(in2026.paySelected).toBe(in2026.paySpecial20); // 100,000×20% = 20,000
+    const in2026 = summarizeTax([sale('2026-06-15')], 2026, special);
+    expect(in2026.specialRate).toBe(20);
+    expect(in2026.paySelected).toBe(20_000); // 100,000 × 20%
 
-    const in2027 = summarizeTax([sale('2027-06-15')], 2027, special20);
-    expect(in2027.special20Available).toBe(false);
-    expect(in2027.paySelected).toBe(in2027.payGeneral); // 2割特例の20,000ではなく本則の100,000
+    const in2027 = summarizeTax([sale('2027-06-15')], 2027, special);
+    expect(in2027.specialRate).toBe(30);
+    expect(in2027.paySelected).toBe(30_000); // 3割特例: 100,000 × 30%
+    expect(summarizeTax([sale('2028-06-15')], 2028, special).specialRate).toBe(30);
 
-    const in2022 = summarizeTax([sale('2022-06-15')], 2022, special20);
-    expect(in2022.special20Available).toBe(false); // 制度開始(2023年10月)前
+    const in2029 = summarizeTax([sale('2029-06-15')], 2029, special);
+    expect(in2029.specialRate).toBeNull();
+    expect(in2029.paySelected).toBe(in2029.payGeneral); // 特例の終了後は本則の100,000
+
+    const in2022 = summarizeTax([sale('2022-06-15')], 2022, special);
+    expect(in2022.specialRate).toBeNull(); // 制度開始(2023年10月)前
   });
 });
 
@@ -306,6 +320,20 @@ describe('固定資産の取得: 購入年の課税仕入(本則課税の仕入�
     const without = summarizeTax([sales], 2026, settings);
     const withAsset = summarizeTax([sales, buy(550_000)], 2026, settings, assets);
     expect(withAsset.paySimplified).toBe(without.paySimplified);
-    expect(withAsset.paySpecial20).toBe(without.paySpecial20);
+    expect(withAsset.paySpecial).toBe(without.paySpecial);
+  });
+});
+
+describe('固定資産の売却代金: 消費税は課税売上・所得税は売上にしない', () => {
+  it('売却代金は課税売上として消費税に入るが、事業の売上(損益)には入らない', async () => {
+    const { summarizeYear } = await import('./aggregate');
+    const { entryForTransaction } = await import('./ledger');
+    const sale = tx({ description: '営業車の売却', type: 'income', account: 'asset_sale', amount: 550_000 });
+    expect(defaultTaxCategory(sale)).toBe('taxable10');
+    const s = summarizeTax([sale], 2026, settings);
+    expect(s.sales10).toBe(550_000);
+    expect(s.salesTax).toBe(50_000);
+    expect(summarizeYear([sale], 2026).totalSales).toBe(0);
+    expect(entryForTransaction(sale)!.credits).toEqual([{ account: 'owner_invest', amount: 550_000 }]);
   });
 });

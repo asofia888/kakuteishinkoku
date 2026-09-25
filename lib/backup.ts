@@ -6,6 +6,7 @@ import {
   DEFAULT_TAX_SETTINGS,
   DeductionEntry,
   FixedAsset,
+  FundAccount,
   FundId,
   Invoice,
   InvoiceItem,
@@ -14,6 +15,8 @@ import {
   OpeningBalance,
   Partner,
   PayrollEntry,
+  Reconciliation,
+  RentPayee,
   Rule,
   TaxCategory,
   TaxSettings,
@@ -159,11 +162,11 @@ export function sanitizeAppData(raw: unknown): AppData | null {
   const rules = (Array.isArray(obj.rules) ? obj.rules : [])
     .map(sanitizeRule)
     .filter((r): r is Rule => r !== null);
-  // 按分設定は科目ごとに1件(重複していたら後の設定を優先)
-  const anbunByAccount = new Map<string, AnbunSetting>();
+  // 按分設定は 科目 × 適用開始年 ごとに1件(重複していたら後の設定を優先)
+  const anbunByKey = new Map<string, AnbunSetting>();
   for (const item of Array.isArray(obj.anbunSettings) ? obj.anbunSettings : []) {
     const s = sanitizeAnbunSetting(item);
-    if (s) anbunByAccount.set(s.account, s);
+    if (s) anbunByKey.set(`${s.account}|${s.fromYear ?? ''}`, s);
   }
   // 期首残高は年ごとに1件(重複していたら後の設定を優先)
   const obByYear = new Map<number, OpeningBalance>();
@@ -210,7 +213,7 @@ export function sanitizeAppData(raw: unknown): AppData | null {
   return {
     transactions,
     rules,
-    anbunSettings: [...anbunByAccount.values()],
+    anbunSettings: [...anbunByKey.values()],
     openingBalances: [...obByYear.values()].sort((a, b) => a.year - b.year),
     taxSettings: sanitizeTaxSettings(obj.taxSettings),
     invoices,
@@ -223,7 +226,86 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     yearEndAdjustments: [...yeaByKey.values()].sort(
       (a, b) => a.year - b.year || a.employee.localeCompare(b.employee),
     ),
+    // 申告済みロックの年(v3.9.0 以前のデータにはない = ロックなし)
+    lockedYears: [
+      ...new Set((Array.isArray(obj.lockedYears) ? obj.lockedYears : []).filter(isYear)),
+    ].sort((a, b) => a - b),
+    fundAccounts: sanitizeList(obj.fundAccounts, sanitizeFundAccount),
+    reconciliations: sanitizeList(obj.reconciliations, sanitizeReconciliation),
+    rentPayees: sanitizeList(obj.rentPayees, sanitizeRentPayee),
   };
+}
+
+function sanitizeRentPayee(raw: unknown): RentPayee | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Partial<RentPayee>;
+  const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  const name = text(p.name, 60);
+  if (!name) return null;
+  return {
+    id: typeof p.id === 'string' && p.id !== '' ? p.id : uid(),
+    name,
+    address: text(p.address, 120),
+    property: text(p.property, 14),
+    keyword: text(p.keyword, 30),
+    createdAt: typeof p.createdAt === 'number' && Number.isFinite(p.createdAt) ? p.createdAt : Date.now(),
+  };
+}
+
+/** ID 付き要素の配列を検証する(壊れた要素は捨て、ID の重複は最初の1件だけ残す) */
+function sanitizeList<T extends { id: string }>(raw: unknown, fn: (x: unknown) => T | null): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const v = fn(item);
+    if (!v || seen.has(v.id)) continue;
+    seen.add(v.id);
+    out.push(v);
+  }
+  return out;
+}
+
+function sanitizeFundAccount(raw: unknown): FundAccount | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Partial<FundAccount>;
+  if (a.fund !== 'bank' && a.fund !== 'card') return null;
+  const name = typeof a.name === 'string' ? a.name.trim().slice(0, 30) : '';
+  if (!name) return null;
+  return {
+    id: typeof a.id === 'string' && a.id !== '' ? a.id : uid(),
+    fund: a.fund,
+    name,
+    createdAt: typeof a.createdAt === 'number' && Number.isFinite(a.createdAt) ? a.createdAt : Date.now(),
+  };
+}
+
+function sanitizeReconciliation(raw: unknown): Reconciliation | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Partial<Reconciliation>;
+  if (typeof r.target !== 'string' || r.target === '') return null;
+  if (typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) return null;
+  if (typeof r.balance !== 'number' || !Number.isFinite(r.balance)) return null;
+  return {
+    id: typeof r.id === 'string' && r.id !== '' ? r.id : uid(),
+    target: r.target,
+    date: r.date,
+    balance: Math.round(r.balance),
+    createdAt: typeof r.createdAt === 'number' && Number.isFinite(r.createdAt) ? r.createdAt : Date.now(),
+  };
+}
+
+/** 口座別の期首残高(数値の要素だけ残す。空なら省略) */
+function subBalancesOf(raw: unknown): { subBalances?: Record<string, number> } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k !== '' && typeof v === 'number' && Number.isFinite(v)) out[k] = Math.round(v);
+  }
+  return Object.keys(out).length > 0 ? { subBalances: out } : {};
+}
+
+function isYear(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 2000 && v <= 2100;
 }
 
 function sanitizeYearEndAdjustment(raw: unknown): YearEndAdjustment | null {
@@ -280,6 +362,11 @@ function sanitizeTransaction(raw: unknown, seenIds: Set<string>): Transaction | 
       : {}),
     // 未設定 = 適格請求書あり。明示的に false のときだけ保持する
     ...(t.qualifiedInvoice === false ? { qualifiedInvoice: false } : {}),
+    // 口座・カード(補助科目)。存在しない ID でも捨てない(集計時に既定の口座へ寄せる)
+    ...(typeof t.fundAccount === 'string' && t.fundAccount !== '' ? { fundAccount: t.fundAccount } : {}),
+    ...(typeof t.counterAccount === 'string' && t.counterAccount !== ''
+      ? { counterAccount: t.counterAccount }
+      : {}),
     // 借入金の返済のうち利息(0〜金額の範囲)
     ...(typeof t.interest === 'number' && Number.isFinite(t.interest) && t.interest > 0
       ? { interest: Math.min(Math.round(t.interest), Math.round(t.amount)) }
@@ -312,6 +399,7 @@ function sanitizeOpeningBalance(raw: unknown): OpeningBalance | null {
     // v3.8.2 以前のデータには借入金がない(0として読み込む)
     loan: amount(o.loan),
     deposit: amount(o.deposit),
+    ...subBalancesOf(o.subBalances),
   };
 }
 
@@ -498,6 +586,9 @@ function sanitizeDeduction(raw: unknown): DeductionEntry | null {
     blueDeduction:
       d.blueDeduction === 550000 || d.blueDeduction === 100000 ? d.blueDeduction : 650000,
     withholding: amount(d.withholding),
+    // v3.9.0 以前のデータにはない(0 として読み込む)
+    prepaidTax: amount(d.prepaidTax),
+    lossCarryforward: amount(d.lossCarryforward),
   };
 }
 
@@ -569,6 +660,7 @@ function sanitizeAnbunSetting(raw: unknown): AnbunSetting | null {
   return {
     id: typeof s.id === 'string' && s.id !== '' ? s.id : uid(),
     account: s.account,
+    ...(isYear(s.fromYear) ? { fromYear: s.fromYear } : {}),
     type: s.type,
     value,
     ...(memo ? { memo } : {}),

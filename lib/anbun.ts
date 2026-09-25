@@ -16,8 +16,10 @@ export function applyAnbun(
   transactions: Transaction[],
   settings: AnbunSetting[],
 ): Transaction[] {
-  const settingByAccount = new Map<string, AnbunSetting>();
-  for (const s of settings) settingByAccount.set(s.account, s);
+  const settingsByAccount = new Map<string, AnbunSetting[]>();
+  for (const s of settings) {
+    settingsByAccount.set(s.account, [...(settingsByAccount.get(s.account) ?? []), s]);
+  }
 
   // fixed(月次固定額)は同一月内での累計が必要なため、
   // 「科目|YYYY-MM」ごとに日付順で充当していく。
@@ -35,7 +37,10 @@ export function applyAnbun(
       resultById.set(t.id, withAnbun(t, t.amount, false));
       continue;
     }
-    const setting = settingByAccount.get(t.account);
+    const setting = anbunSettingFor(
+      settingsByAccount.get(t.account) ?? [],
+      Number(t.date.slice(0, 4)),
+    );
     if (!setting) {
       resultById.set(t.id, withAnbun(t, t.amount, false));
       continue;
@@ -55,6 +60,20 @@ export function applyAnbun(
   }
 
   return transactions.map((t) => resultById.get(t.id) ?? t);
+}
+
+/**
+ * 同じ科目の設定のうち、指定年に適用されるもの
+ * (適用開始年がその年以前で最も新しい設定。適用開始年なし = すべての年)。
+ */
+export function anbunSettingFor(settings: AnbunSetting[], year: number): AnbunSetting | undefined {
+  let best: AnbunSetting | undefined;
+  for (const s of settings) {
+    const from = s.fromYear ?? -Infinity;
+    if (from > year) continue;
+    if (!best || from > (best.fromYear ?? -Infinity)) best = s;
+  }
+  return best;
 }
 
 /** businessAmount が変わらない場合は同じオブジェクトを返す(不要な再描画を防ぐ) */

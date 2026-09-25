@@ -4,6 +4,7 @@ import Link from 'next/link';
 import React, { useMemo, useState } from 'react';
 import { EtaxCard } from '@/components/EtaxCard';
 import { FilingSheets } from '@/components/FilingSheets';
+import { RentBreakdownCard } from '@/components/RentBreakdownCard';
 import { Alert, btn, Card, PageHeader, selectCls } from '@/components/ui';
 import { availableYears, summarizeYear, transactionsOfYear } from '@/lib/aggregate';
 import { yearDepreciationTotals } from '@/lib/assets';
@@ -250,6 +251,8 @@ export default function FilingPage() {
           </p>
         </Card>
 
+        <RentBreakdownCard year={year} />
+
         <Card title="青色申告決算書 3ページ目 ── 減価償却費の計算">
           <SectionTable>
             <Row label="本年分の必要経費算入額 合計" value={dep.business || null} note="損益計算書の「減価償却費」と一致" />
@@ -317,6 +320,9 @@ export default function FilingPage() {
           <SectionTable>
             <Row label="収入金額等 ── 事業(営業等)㋐" value={summary.totalSales} />
             <Row label="所得金額等 ── 事業(営業等)" value={tax.totalIncome} note="青色申告特別控除後" strong />
+            {tax.lossApplied > 0 && (
+              <Row label="純損失の繰越控除(第四表で計算)" value={tax.lossApplied} note="所得金額から差し引く" />
+            )}
             {tax.breakdown.map((l) => (
               <Row key={l.label} label={`所得から差し引かれる金額 ── ${l.label}`} value={l.amount} />
             ))}
@@ -326,8 +332,10 @@ export default function FilingPage() {
             <Row label="復興特別所得税(税額 × 2.1%)" value={tax.reconstructionTax} />
             <Row label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
             <Row label="源泉徴収税額" value={deduction.withholding} />
+            <Row label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
+            <Row label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />
             <Row
-              label={tax.balanceDue >= 0 ? '納める税金(100円未満切捨て)' : '還付される税金'}
+              label={tax.balanceDue >= 0 ? '第3期分の税額 ── 納める税金' : '第3期分の税額 ── 還付される税金'}
               value={Math.abs(tax.balanceDue)}
               strong
             />
@@ -335,7 +343,12 @@ export default function FilingPage() {
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
             <li>作成コーナーで決算書→申告書の順に入力すると、収入・所得は自動転記されます。</li>
             <li>65万円控除は e-Tax 送信(または優良な電子帳簿保存)が要件です。書面提出は55万円になります。</li>
-            <li>予定納税がある場合は第一表の該当欄で差し引いてください(本アプリでは未管理)。</li>
+            <li>予定納税額・繰り越された純損失は、所得税シミュレーションで入力した値です。</li>
+            {tax.lossToCarry > 0 && (
+              <li className="font-medium text-amber-800">
+                翌年以後に繰り越せる純損失が{tax.lossToCarry.toLocaleString()}円あります。申告書第四表(損失申告用)を提出してください。
+              </li>
+            )}
           </ul>
         </Card>
 

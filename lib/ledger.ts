@@ -24,6 +24,7 @@ import { FixedAsset, InventoryCount, OpeningBalance, Transaction } from './types
  * - 売掛金の回収:     (借) 決済手段        / (貸) 売掛金
  * - カード引落し:     (借) 未払金(カード)  / (貸) 決済手段
  * - 未払金の支払い:   (借) 買掛金・未払金  / (貸) 決済手段
+ * - 固定資産の売却:   (借) 決済手段        / (貸) 事業主借(譲渡所得のため売上にしない)
  * - 借入れ:           (借) 決済手段        / (貸) 借入金
  * - 借入金の返済:     (借) 借入金(元金)    / (貸) 決済手段
  *                    (借) 利子割引料(利息)
@@ -81,6 +82,8 @@ export function ledgerLineLabel(account: string): string {
 export interface JournalLine {
   account: string;
   amount: number;
+  /** 普通預金・カードの口座(補助科目 ID)。未設定 = その資金の既定の口座 */
+  sub?: string;
 }
 
 export interface JournalEntry {
@@ -94,6 +97,7 @@ export interface JournalEntry {
 /**
  * 取引1件から複式仕訳を導出する。
  * 未仕訳(account=null)と、私費で払った私的な取引(帳簿外)は null。
+ * 普通預金・カードの行には口座(補助科目 ID)を sub として付ける(元帳・残高照合用)。
  */
 export function entryForTransaction(t: Transaction): JournalEntry | null {
   if (t.account === null) return null;
@@ -101,6 +105,10 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
   // 決済手段の勘定。「事業主(私費)」だけは借方と貸方で科目が変わる
   const fundDr: string = t.fund === 'owner' ? 'owner_draw' : t.fund;
   const fundCr: string = t.fund === 'owner' ? 'owner_invest' : t.fund;
+  const withSub = (account: string, amount: number, sub?: string): JournalLine =>
+    sub && (account === 'bank' || account === 'card') ? { account, amount, sub } : { account, amount };
+  // 決済手段側の行(口座・カードの指定があれば補助科目を付ける)
+  const fundLine = (account: string, amount: number) => withSub(account, amount, t.fundAccount);
 
   if (isExcluded(t.account)) {
     // 私費で払った私的な取引は事業の帳簿に載らない
@@ -108,35 +116,36 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
     return t.type === 'income'
       ? {
           ...base,
-          debits: [{ account: fundDr, amount: t.amount }],
+          debits: [fundLine(fundDr, t.amount)],
           credits: [{ account: 'owner_invest', amount: t.amount }],
         }
       : {
           ...base,
           debits: [{ account: 'owner_draw', amount: t.amount }],
-          credits: [{ account: fundCr, amount: t.amount }],
+          credits: [fundLine(fundCr, t.amount)],
         };
   }
 
   if (t.account === 'ar_collect') {
     return {
       ...base,
-      debits: [{ account: fundDr, amount: t.amount }],
+      debits: [fundLine(fundDr, t.amount)],
       credits: [{ account: 'receivable', amount: t.amount }],
     };
   }
   if (t.account === 'card_payment') {
+    // 引き落とされたカード(counterAccount)の未払金が減る
     return {
       ...base,
-      debits: [{ account: 'card', amount: t.amount }],
-      credits: [{ account: fundCr, amount: t.amount }],
+      debits: [withSub('card', t.amount, t.counterAccount)],
+      credits: [fundLine(fundCr, t.amount)],
     };
   }
   if (t.account === 'ap_payment') {
     return {
       ...base,
       debits: [{ account: 'payable', amount: t.amount }],
-      credits: [{ account: fundCr, amount: t.amount }],
+      credits: [fundLine(fundCr, t.amount)],
     };
   }
   if (t.account === 'asset_purchase') {
@@ -144,7 +153,7 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
     return {
       ...base,
       debits: [{ account: 'fixed_asset', amount: t.amount }],
-      credits: [{ account: fundCr, amount: t.amount }],
+      credits: [fundLine(fundCr, t.amount)],
     };
   }
   if (t.account === 'deposit_payment') {
@@ -152,14 +161,22 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
     return {
       ...base,
       debits: [{ account: 'deposit', amount: t.amount }],
-      credits: [{ account: fundCr, amount: t.amount }],
+      credits: [fundLine(fundCr, t.amount)],
+    };
+  }
+  if (t.account === 'asset_sale') {
+    // 事業用資産の売却代金: 譲渡所得のため事業の売上にせず事業主借へ(資産の残存簿価は除却時に事業主貸へ振替済み)
+    return {
+      ...base,
+      debits: [fundLine(fundDr, t.amount)],
+      credits: [{ account: 'owner_invest', amount: t.amount }],
     };
   }
   if (t.account === 'loan_receipt') {
     // 融資の入金: 売上ではなく負債(借入金)の増加
     return {
       ...base,
-      debits: [{ account: fundDr, amount: t.amount }],
+      debits: [fundLine(fundDr, t.amount)],
       credits: [{ account: 'loan', amount: t.amount }],
     };
   }
@@ -169,10 +186,10 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
     const debits: JournalLine[] = [];
     if (t.amount - interest > 0) debits.push({ account: 'loan', amount: t.amount - interest });
     if (interest > 0) debits.push({ account: 'interest', amount: interest });
-    return { ...base, debits, credits: [{ account: fundCr, amount: t.amount }] };
+    return { ...base, debits, credits: [fundLine(fundCr, t.amount)] };
   }
   if (t.account === 'fund_transfer') {
-    // 資金の間の移動(ATM引き出し・預け入れなど)。損益に影響しない
+    // 資金の間の移動(ATM引き出し・預け入れ・口座間の振替など)。損益に影響しない
     const counter = t.counterFund ?? (t.fund === 'cash' ? 'bank' : 'cash');
     const counterDr: string = counter === 'owner' ? 'owner_draw' : counter;
     const counterCr: string = counter === 'owner' ? 'owner_invest' : counter;
@@ -180,21 +197,21 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
       ? // 支出 = fund から counterFund へ(例: 預金からATMで現金を引き出す)
         {
           ...base,
-          debits: [{ account: counterDr, amount: t.amount }],
-          credits: [{ account: fundCr, amount: t.amount }],
+          debits: [withSub(counterDr, t.amount, t.counterAccount)],
+          credits: [fundLine(fundCr, t.amount)],
         }
       : // 収入 = counterFund から fund へ(例: 現金を口座へ預け入れる)
         {
           ...base,
-          debits: [{ account: fundDr, amount: t.amount }],
-          credits: [{ account: counterCr, amount: t.amount }],
+          debits: [fundLine(fundDr, t.amount)],
+          credits: [withSub(counterCr, t.amount, t.counterAccount)],
         };
   }
 
   if (t.type === 'income') {
     return {
       ...base,
-      debits: [{ account: fundDr, amount: t.amount }],
+      debits: [fundLine(fundDr, t.amount)],
       credits: [{ account: t.account, amount: t.amount }],
     };
   }
@@ -204,7 +221,7 @@ export function entryForTransaction(t: Transaction): JournalEntry | null {
   if (t.businessAmount > 0) debits.push({ account: t.account, amount: t.businessAmount });
   const ownerPart = t.amount - t.businessAmount;
   if (ownerPart > 0) debits.push({ account: 'owner_draw', amount: ownerPart });
-  return { ...base, debits, credits: [{ account: fundCr, amount: t.amount }] };
+  return { ...base, debits, credits: [fundLine(fundCr, t.amount)] };
 }
 
 /** 仕訳済みの全取引から仕訳帳を作る(日付順) */
@@ -530,24 +547,25 @@ function isDebitPositive(account: string): boolean {
   return accountType(account) === 'expense';
 }
 
-/** 指定勘定の総勘定元帳(日付順・残高付き) */
+/**
+ * 指定勘定の総勘定元帳(日付順・残高付き)。
+ * match を渡すと、その条件に合う行だけを対象にする(口座ごとの補助元帳など)。
+ */
 export function generalLedger(
   entries: JournalEntry[],
   account: string,
   openingBalance = 0,
+  match: (l: JournalLine) => boolean = (l) => l.account === account,
 ): GeneralLedgerRow[] {
   const rows: GeneralLedgerRow[] = [];
   let balance = openingBalance;
   const drPlus = isDebitPositive(account);
   for (const e of entries) {
-    const debit = e.debits.filter((l) => l.account === account).reduce((s, l) => s + l.amount, 0);
-    const credit = e.credits.filter((l) => l.account === account).reduce((s, l) => s + l.amount, 0);
+    const debit = e.debits.filter(match).reduce((s, l) => s + l.amount, 0);
+    const credit = e.credits.filter(match).reduce((s, l) => s + l.amount, 0);
     if (debit === 0 && credit === 0) continue;
     // 相手勘定: 自分以外の行が1つならその科目、複数なら「諸口」
-    const others = [
-      ...e.debits.filter((l) => l.account !== account),
-      ...e.credits.filter((l) => l.account !== account),
-    ];
+    const others = [...e.debits.filter((l) => !match(l)), ...e.credits.filter((l) => !match(l))];
     const counter = others.length === 1 ? ledgerLineLabel(others[0].account) : '諸口';
     balance += drPlus ? debit - credit : credit - debit;
     rows.push({ date: e.date, description: e.description, counter, debit, credit, balance });
@@ -579,8 +597,14 @@ function csvCell(s: string): string {
   return `"${escapeFormulaCell(s).replace(/"/g, '""')}"`;
 }
 
-/** 仕訳帳をCSVにする(複合仕訳は行を分ける。Excel対応のためBOM付き) */
-export function journalToCsv(entries: JournalEntry[]): string {
+/**
+ * 仕訳帳をCSVにする(複合仕訳は行を分ける。Excel対応のためBOM付き)。
+ * label で勘定の表示名を差し替えられる(口座名付きの「普通預金(楽天銀行)」など)
+ */
+export function journalToCsv(
+  entries: JournalEntry[],
+  label: (l: JournalLine) => string = (l) => ledgerLineLabel(l.account),
+): string {
   const lines = ['No,日付,借方科目,借方金額,貸方科目,貸方金額,摘要'];
   entries.forEach((e, i) => {
     const n = Math.max(e.debits.length, e.credits.length);
@@ -591,9 +615,9 @@ export function journalToCsv(entries: JournalEntry[]): string {
         [
           row === 0 ? i + 1 : '',
           row === 0 ? e.date : '',
-          dLine ? csvCell(ledgerLineLabel(dLine.account)) : '',
+          dLine ? csvCell(label(dLine)) : '',
           dLine ? dLine.amount : '',
-          cLine ? csvCell(ledgerLineLabel(cLine.account)) : '',
+          cLine ? csvCell(label(cLine)) : '',
           cLine ? cLine.amount : '',
           row === 0 ? csvCell(e.description) : '',
         ].join(','),

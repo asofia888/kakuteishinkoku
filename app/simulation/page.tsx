@@ -4,14 +4,14 @@ import React, { useMemo, useState } from 'react';
 import { Alert, btn, Card, input, PageHeader, selectCls, StatCard } from '@/components/ui';
 import { availableYears, summarizeYear } from '@/lib/aggregate';
 import { yen } from '@/lib/format';
-import { simulateIncomeTax } from '@/lib/incometax';
+import { simulateIncomeTax, suggestedLossCarryforward } from '@/lib/incometax';
 import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
 import { DeductionEntry, emptyDeduction } from '@/lib/types';
 
 /** 控除入力フィールドの定義(金額はすべて円) */
 const FIELDS: {
-  key: keyof Omit<DeductionEntry, 'year' | 'blueDeduction' | 'withholding'>;
+  key: keyof Omit<DeductionEntry, 'year' | 'blueDeduction' | 'withholding' | 'prepaidTax' | 'lossCarryforward'>;
   label: string;
   hint: string;
 }[] = [
@@ -52,6 +52,22 @@ export default function SimulationPage() {
 
   const saved = store.deductions.find((d) => d.year === year);
 
+  // 前年以前の帳簿の赤字から、この年に使える純損失の繰越額の目安(青色・3年)
+  const lossSuggestion = useMemo(
+    () =>
+      suggestedLossCarryforward(
+        years
+          .filter((y) => y < year)
+          .map((y) => ({
+            year: y,
+            profit: summarizeYear(store.transactions, y, store.assets, store.inventories).profit,
+            blueDeduction: store.deductions.find((d) => d.year === y)?.blueDeduction ?? 650_000,
+          })),
+        year,
+      ),
+    [years, year, store.transactions, store.assets, store.inventories, store.deductions],
+  );
+
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
@@ -78,6 +94,7 @@ export default function SimulationPage() {
           profit={summary.profit}
           initial={saved ?? emptyDeduction(year)}
           invoiceWithholding={invoiceWithholding}
+          lossSuggestion={lossSuggestion}
           onSave={(entry) => store.setDeduction(entry)}
         />
       </div>
@@ -90,12 +107,14 @@ function SimulationBody({
   profit,
   initial,
   invoiceWithholding,
+  lossSuggestion,
   onSave,
 }: {
   year: number;
   profit: number;
   initial: DeductionEntry;
   invoiceWithholding: number;
+  lossSuggestion: number;
   onSave: (entry: DeductionEntry) => void;
 }) {
   const [form, setForm] = useState<DeductionEntry>(initial);
@@ -124,9 +143,9 @@ function SimulationBody({
           tone="primary"
         />
         <StatCard
-          label={result.balanceDue >= 0 ? '納付見込み(源泉差引後)' : '還付見込み'}
+          label={result.balanceDue >= 0 ? '納付見込み(源泉・予定納税差引後)' : '還付見込み'}
           value={yen(Math.abs(result.balanceDue))}
-          sub={`源泉徴収税額 ${yen(form.withholding)}`}
+          sub={`源泉徴収税額 ${yen(form.withholding)}${form.prepaidTax > 0 ? `・予定納税 ${yen(form.prepaidTax)}` : ''}`}
           tone={result.balanceDue >= 0 ? 'default' : 'positive'}
         />
       </div>
@@ -187,6 +206,50 @@ function SimulationBody({
                 </button>
               )}
             </div>
+            <div>
+              <label htmlFor="sim-prepaid-tax" className="mb-1 block text-xs font-medium text-slate-500">
+                予定納税額(第1期・第2期の合計)
+              </label>
+              <input
+                id="sim-prepaid-tax"
+                type="number"
+                min={0}
+                className={`${input} w-full text-right`}
+                value={form.prepaidTax || ''}
+                placeholder="0"
+                onChange={(e) => set({ prepaidTax: num(e.target.value) })}
+              />
+              <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
+                前年の納税額が15万円以上だと7月・11月に納付する予定納税(通知書の金額)
+              </p>
+            </div>
+            <div>
+              <label htmlFor="sim-loss-carryforward" className="mb-1 block text-xs font-medium text-slate-500">
+                繰り越された純損失(前年以前3年分)
+              </label>
+              <input
+                id="sim-loss-carryforward"
+                type="number"
+                min={0}
+                className={`${input} w-full text-right`}
+                value={form.lossCarryforward || ''}
+                placeholder="0"
+                onChange={(e) => set({ lossCarryforward: num(e.target.value) })}
+              />
+              {lossSuggestion > 0 && lossSuggestion !== form.lossCarryforward ? (
+                <button
+                  type="button"
+                  className="mt-1 text-[11px] font-medium text-blue-700 underline"
+                  onClick={() => set({ lossCarryforward: lossSuggestion })}
+                >
+                  帳簿の赤字から計算({yen(lossSuggestion)})を使う
+                </button>
+              ) : (
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
+                  青色申告で赤字の年があれば、翌年から3年間の所得から差し引ける
+                </p>
+              )}
+            </div>
           </div>
           <div className="mt-4">
             <button
@@ -217,6 +280,18 @@ function SimulationBody({
                 <td className="py-1.5 pr-2">事業所得(合計所得金額)</td>
                 <td className="tabular py-1.5 text-right">{yen(result.totalIncome)}</td>
               </tr>
+              {result.lossApplied > 0 && (
+                <>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-600">純損失の繰越控除</td>
+                    <td className="tabular py-1.5 text-right">−{yen(result.lossApplied)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-200 font-medium">
+                    <td className="py-1.5 pr-2">総所得金額等</td>
+                    <td className="tabular py-1.5 text-right">{yen(result.incomeAfterLoss)}</td>
+                  </tr>
+                </>
+              )}
               {result.breakdown.map((l) => (
                 <tr key={l.label} className="border-b border-slate-100">
                   <td className="py-1.5 pr-2 text-slate-600">{l.label}</td>
@@ -239,8 +314,22 @@ function SimulationBody({
                 <td className="py-1.5 pr-2 text-slate-600">源泉徴収税額</td>
                 <td className="tabular py-1.5 text-right">−{yen(form.withholding)}</td>
               </tr>
+              {form.prepaidTax > 0 && (
+                <>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-600">申告納税額(100円未満切捨て)</td>
+                    <td className="tabular py-1.5 text-right">{yen(result.filingTax)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-600">予定納税額(第1期・第2期)</td>
+                    <td className="tabular py-1.5 text-right">−{yen(form.prepaidTax)}</td>
+                  </tr>
+                </>
+              )}
               <tr className="bg-emerald-50/60 font-bold text-emerald-800">
-                <td className="py-2 pr-2">{result.balanceDue >= 0 ? '納付見込み(100円未満切捨て)' : '還付見込み'}</td>
+                <td className="py-2 pr-2">
+                  {result.balanceDue >= 0 ? '納付見込み(第3期分の税額)' : '還付見込み'}
+                </td>
                 <td className="tabular py-2 text-right">{yen(Math.abs(result.balanceDue))}</td>
               </tr>
             </tbody>
@@ -264,7 +353,13 @@ function SimulationBody({
               基礎控除は<strong>令和8年度税制改正に対応</strong>
               (2025年分は58万円+上乗せ、2026・2027年分は合計所得489万円以下104万円・655万円以下67万円・それ超62万円、2028年分以後は62万円〔132万円以下は99万円〕)。年分に応じて自動で切り替わります。
             </li>
-            <li>事業所得のみを前提とした概算です(給与所得・予定納税・税額控除〔住宅ローン控除等〕は未対応)。</li>
+            <li>事業所得のみを前提とした概算です(給与所得・税額控除〔住宅ローン控除等〕は未対応)。</li>
+            {result.lossToCarry > 0 && (
+              <li className="font-medium text-amber-800">
+                翌年以後に繰り越せる純損失は{yen(result.lossToCarry)}です(青色申告のみ。損失の年の翌年から3年間)。
+                申告書第四表(損失申告用)の提出が必要です。
+              </li>
+            )}
             <li>住民税は基礎控除だけ住民税の額(43万円)に置き換えて概算しています。扶養控除など他の控除額の差(住民税33万円など)は反映していないため、あくまで目安です。</li>
             <li>国民健康保険料・国民年金は含まれません。最終的な申告は国税庁の確定申告書等作成コーナーで確認してください。</li>
           </ul>

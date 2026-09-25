@@ -24,7 +24,41 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 /** 手続・帳票のバージョン(仕様改定時はここを更新して公式XSDで再検証する) */
 export const ETAX_VERSIONS = { procedure: '25.0.0', koa210: '11.0', it: '1.5' } as const;
 
-function esc(s: string): string {
+/**
+ * e-Tax の文字列型(general:str)で使えない文字を直す。
+ * 使える文字は基本ラテン・ひらがな・全角カタカナ・漢字・全角英数記号など。
+ * 半角カタカナ(銀行明細由来の「ｶﾌﾞｼｷｶﾞｲｼｬ」など)や絵文字が1文字でもあると
+ * 申告等データ全体がスキーマ違反になるため、NFKC で半角カナを全角に揃え、
+ * それでも使えない文字は取り除く。
+ */
+export function etaxText(s: string): string {
+  return [...s.normalize('NFKC')].filter(isEtaxChar).join('');
+}
+
+function isEtaxChar(ch: string): boolean {
+  const c = ch.codePointAt(0)!;
+  if (c === 0x09 || c === 0x0a || c === 0x0d) return true;
+  const inRange = (from: number, to: number) => c >= from && c <= to;
+  return (
+    inRange(0x20, 0x7e) || // 基本ラテン(制御文字を除く)
+    inRange(0xa0, 0xff) || // ラテン1補助(制御文字を除く)
+    inRange(0x370, 0x4ff) || // ギリシャ・キリル
+    inRange(0x2000, 0x206f) || // 一般句読点
+    inRange(0x2150, 0x21ff) || // 数字の形・矢印
+    inRange(0x2200, 0x22ff) || // 数学記号
+    inRange(0x2460, 0x24ff) || // 囲み英数字
+    inRange(0x2500, 0x257f) || // 罫線
+    inRange(0x25a0, 0x25ff) || // 幾何学模様
+    inRange(0x3000, 0x30ff) || // CJK記号・ひらがな・カタカナ
+    inRange(0x3200, 0x33ff) || // 囲みCJK・CJK互換
+    inRange(0x4e00, 0x9fff) || // CJK統合漢字
+    inRange(0xf900, 0xfaff) || // CJK互換漢字
+    (inRange(0xff00, 0xffef) && !inRange(0xff66, 0xff9f)) // 全角形(半角カタカナを除く)
+  );
+}
+
+function esc(raw: string): string {
+  const s = etaxText(raw);
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -50,7 +84,8 @@ function ref(name: string, idref: string): string {
 
 /** 様式の文字数上限(XSDのmaxLength)に合わせて切り詰める */
 function cut(s: string, max: number): string {
-  return [...s].slice(0, max).join('');
+  // 文字数は使える文字に直してから数える(直すと文字数が変わることがあるため)
+  return [...etaxText(s)].slice(0, max).join('');
 }
 
 /** 和暦(era: 3=昭和 4=平成 5=令和) */
@@ -102,6 +137,18 @@ export interface EtaxDepreciationRow {
   note: string;
 }
 
+/** 地代家賃の内訳1行(支払先ごと。様式は2行まで) */
+export interface EtaxRentRow {
+  name: string;
+  address: string;
+  /** 賃借物件(14字まで) */
+  property: string;
+  /** 本年中の賃借料(按分前) */
+  rent: number;
+  /** 左の賃借料のうち必要経費算入額 */
+  business: number;
+}
+
 /** 給料賃金の内訳1行(従業員ごと) */
 export interface EtaxPayrollRow {
   name: string;
@@ -137,6 +184,8 @@ export interface KessanshoInput {
   /** 軽減税率対象の売上・仕入(税区分 taxable8 の集計。0なら出力しない) */
   reduced: { sales: number; purchases: number };
   payroll: EtaxPayrollRow[];
+  /** 地代家賃の内訳(3件目以降は様式に欄がないため出力しない) */
+  rent?: EtaxRentRow[];
   depreciation: EtaxDepreciationRow[];
   bs: {
     opening: {
@@ -237,6 +286,20 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     tag('AMF01160', opt(r.withholding)) +
     '</AMF01080>';
 
+  // ── 地代家賃の内訳(2ページ目。様式は2行) ──
+  const rentXml = (d.rent ?? [])
+    .slice(0, 2)
+    .map(
+      (r) =>
+        '<AMF02120>' +
+        `<AMF02130>${r.address ? tag('AMF02140', r.address) : ''}${tag('AMF02150', r.name)}</AMF02130>` +
+        (r.property ? tag('AMF02160', cut(r.property, 14)) : '') +
+        `<AMF02170>${tag('AMF02200', r.rent)}</AMF02170>` +
+        tag('AMF02210', r.business) +
+        '</AMF02120>',
+    )
+    .join('');
+
   // ── 月別売上・仕入(2ページ目) ──
   const monthWraps = [
     'AMF00590', 'AMF00620', 'AMF00650', 'AMF00680', 'AMF00710', 'AMF00740',
@@ -261,7 +324,7 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
   const extrasXml = d.pl.extras
     .slice(0, 6)
     .filter((e) => e.amount > 0)
-    .map((e) => `<AMF00355>${tag('AMF00060', e.name.slice(0, 10))}${tag('AMF00360', e.amount)}</AMF00355>`)
+    .map((e) => `<AMF00355>${tag('AMF00060', cut(e.name, 10))}${tag('AMF00360', e.amount)}</AMF00355>`)
     .join('');
 
   // ── 青色申告特別控除(65万/55万は⑧⑨、10万は「上記以外」欄) ──
@@ -357,6 +420,7 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
           : '') +
         `<AMF01250>${tag('AMF01260', payMonths(d.payroll))}<AMF01270>${tag('AMF01280', paySalary(d.payroll))}${tag('AMF01300', paySalary(d.payroll))}</AMF01270>${tag('AMF01310', opt(payWh(d.payroll)))}</AMF01250></AMF01070>\n`
       : '') +
+    rentXml +
     `<AMF01500>${tag('AMF01520', d.pl.net)}${blueXml}</AMF01500>\n` +
     `</KOA210-2>\n` +
     // ── 3ページ目: 減価償却費の計算 ──

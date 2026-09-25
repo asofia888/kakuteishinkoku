@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildKessanshoXtx, etaxInputProblems, jpEra, KessanshoInput } from './etax';
+import { buildKessanshoXtx, etaxInputProblems, etaxText, jpEra, KessanshoInput } from './etax';
 import { DEFAULT_ISSUER } from './types';
 
 const issuer = {
@@ -86,6 +86,19 @@ function fixture(): KessanshoInput {
   };
 }
 
+/** 地代家賃の内訳あり・半角カナや絵文字を含む入力(スキーマで使えない文字の補正を確かめる) */
+function rentFixture(): KessanshoInput {
+  const d = fixture();
+  d.issuer = { ...d.issuer, yago: 'ﾔﾏﾀﾞ ﾃﾞｻﾞｲﾝ🎨' };
+  d.depreciation[0].name = 'ﾉｰﾄPC ㈱ﾃｽﾄ';
+  d.rent = [
+    { name: 'ﾔﾏﾀﾞﾌﾄﾞｳｻﾝ(株)', address: '東京都新宿区西新宿１－１', property: '自宅兼事務所(2階の一室と倉庫)', rent: 1_200_000, business: 480_000 },
+    { name: '月極駐車場', address: '', property: '駐車場', rent: 180_000, business: 180_000 },
+    { name: '3件目', address: '', property: '倉庫', rent: 1, business: 1 },
+  ];
+  return d;
+}
+
 /** 借入金ありの貸借対照表(期首200万・期末150万。借入れた資金は預金にある) */
 function loanFixture(): KessanshoInput {
   const d = fixture();
@@ -138,6 +151,26 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
     expect(x).toContain('<AMG00760>6140000</AMG00760>');
     // 借入金がなければ欄を出さない(様式の空欄)
     expect(xml).not.toContain('<AMG00530>');
+  });
+
+  it('地代家賃の内訳: 支払先・物件(14字)・賃借料・必要経費算入額を2件まで、給料と青色控除の間に出す', () => {
+    const x = buildKessanshoXtx(rentFixture());
+    expect((x.match(/<AMF02120>/g) ?? []).length).toBe(2);
+    expect(x).toContain(
+      '<AMF02120><AMF02130><AMF02140>東京都新宿区西新宿1-1</AMF02140><AMF02150>ヤマダフドウサン(株)</AMF02150></AMF02130>' +
+        '<AMF02160>自宅兼事務所(2階の一室と倉</AMF02160><AMF02170><AMF02200>1200000</AMF02200></AMF02170><AMF02210>480000</AMF02210></AMF02120>',
+    );
+    expect(x).toContain('<AMF02130><AMF02150>月極駐車場</AMF02150></AMF02130>'); // 住所なしは省略
+    expect(x.indexOf('<AMF02120>')).toBeLessThan(x.indexOf('<AMF01500>'));
+  });
+
+  it('e-Taxで使えない文字: 半角カナは全角へ、絵文字は取り除く', () => {
+    expect(etaxText('ﾔﾏﾀﾞ ﾃﾞｻﾞｲﾝ🎨')).toBe('ヤマダ デザイン');
+    expect(etaxText('ＡＢＣ１２３')).toBe('ABC123');
+    const x = buildKessanshoXtx(rentFixture());
+    expect(x).toContain('<NOZEISHA_YAGO ID="NOZEISHA_YAGO">ヤマダ デザイン</NOZEISHA_YAGO>');
+    expect(x).toContain('<AMF01610>ノートPC (株)テスト</AMF01610>');
+    expect(x).not.toMatch(/[ｦ-ﾟ]/);
   });
 
   it('0円の任意項目は出力しない(様式の空欄)', () => {
@@ -195,12 +228,13 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
   // 国税庁公式XSDでの検証(ローカル環境のみ:
   //   ETAX_XSD_DIR=<XSDツリー> ETAX_XMLLINT=<xmllintパス> npx vitest run lib/etax.test.ts)
   it.runIf(process.env.ETAX_XSD_DIR && process.env.ETAX_XMLLINT)(
-    '公式XSD(RKO0010-250)に対して valid である(借入金ありの貸借対照表も含む)',
+    '公式XSD(RKO0010-250)に対して valid である(借入金・地代家賃の内訳・半角カナの補正を含む)',
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'xtx-'));
       for (const [name, content] of [
         ['test.xtx', xml],
         ['loan.xtx', buildKessanshoXtx(loanFixture())],
+        ['rent.xtx', buildKessanshoXtx(rentFixture())],
       ]) {
         const file = join(dir, name);
         writeFileSync(file, content, 'utf-8');

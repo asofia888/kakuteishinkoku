@@ -13,6 +13,7 @@ import { applyAnbun } from './anbun';
 import { sanitizeAppData } from './backup';
 import { buildDemoData } from './demo';
 import { buildInvoiceTransactions } from './invoice';
+import { changedLockedYears, isLockedDate } from './lock';
 import { buildPayrollTransactions } from './payroll';
 import { applyRulesToTransactions, buildDefaultRules } from './rules';
 import {
@@ -22,12 +23,15 @@ import {
   DEFAULT_TAX_SETTINGS,
   DeductionEntry,
   FixedAsset,
+  FundAccount,
   Invoice,
   InventoryCount,
   IssuerProfile,
   OpeningBalance,
   Partner,
   PayrollEntry,
+  Reconciliation,
+  RentPayee,
   Rule,
   TaxSettings,
   Transaction,
@@ -42,6 +46,15 @@ const STORAGE_KEY = 'shinkoku-snap:v2';
  * 上書きされる前に生データをここへ写し、手動復旧の可能性を残す。
  */
 export const BROKEN_STORAGE_KEY = `${STORAGE_KEY}:broken`;
+
+/** 申告済みロックにより保存されなかった変更の通知(バナー表示用) */
+export interface LockNotice {
+  /** 帳簿の数字が変わるため変更を止めたロック中の年 */
+  years: number[];
+  /** 取込・追加でロック中の年のため追加しなかった取引の件数 */
+  skipped?: number;
+  at: number;
+}
 
 interface Store {
   /** localStorage の読込が完了したか(SSR/初回描画ではfalse) */
@@ -63,14 +76,41 @@ interface Store {
   partners: Partner[];
   payrolls: PayrollEntry[];
   yearEndAdjustments: YearEndAdjustment[];
+  /** 申告済みとしてロックした年 */
+  lockedYears: number[];
+  /** 直近でロックにより保存されなかった変更(null = なし) */
+  lockNotice: LockNotice | null;
+  dismissLockNotice: () => void;
+  /** 年を申告済みとしてロック/解除する */
+  setYearLocked: (year: number, locked: boolean) => void;
 
-  /** 取引を追加(取込・手入力)。按分は自動で再計算される */
+  /** 口座・カードの補助科目 */
+  fundAccounts: FundAccount[];
+  addFundAccount: (fund: FundAccount['fund'], name: string) => void;
+  renameFundAccount: (id: string, name: string) => void;
+  /** 口座を削除(その口座の取引は既定の口座として扱われる) */
+  deleteFundAccount: (id: string) => void;
+  /** 残高照合の記録 */
+  reconciliations: Reconciliation[];
+  addReconciliation: (r: Omit<Reconciliation, 'id' | 'createdAt'>) => void;
+  deleteReconciliation: (id: string) => void;
+  /** 地代家賃の支払先(決算書「地代家賃の内訳」) */
+  rentPayees: RentPayee[];
+  addRentPayee: (p: Omit<RentPayee, 'id' | 'createdAt'>) => void;
+  updateRentPayee: (id: string, patch: Partial<RentPayee>) => void;
+  deleteRentPayee: (id: string) => void;
+
+  /**
+   * 取引を追加(取込・手入力)。按分は自動で再計算される。
+   * ロック中の年の取引は追加しない。実際に追加した件数を返す
+   */
   addTransactions: (
     txs: Omit<Transaction, 'id' | 'createdAt' | 'businessAmount' | 'anbunApplied'>[],
-  ) => void;
+  ) => number;
   updateTransaction: (id: string, patch: Partial<Transaction>) => void;
-  deleteTransaction: (id: string) => void;
-  deleteTransactions: (ids: string[]) => void;
+  /** 取引を削除。ロック中の年で削除できなかったときは false */
+  deleteTransaction: (id: string) => boolean;
+  deleteTransactions: (ids: string[]) => boolean;
   /** 削除した取引を元に戻す(Undo用。IDが既に存在するものは追加しない) */
   restoreTransactions: (txs: Transaction[]) => void;
   approveTransactions: (ids: string[], approved: boolean) => void;
@@ -82,9 +122,10 @@ interface Store {
   deleteRule: (id: string) => void;
   moveRule: (id: string, dir: -1 | 1) => void;
 
-  addAnbunSetting: (s: Omit<AnbunSetting, 'id'>) => void;
+  /** 按分設定を保存(同じ科目・同じ適用開始年は置き換え)。ロック中の年の経費が変わるときは false */
+  addAnbunSetting: (s: Omit<AnbunSetting, 'id'>) => boolean;
   updateAnbunSetting: (id: string, patch: Partial<AnbunSetting>) => void;
-  deleteAnbunSetting: (id: string) => void;
+  deleteAnbunSetting: (id: string) => boolean;
   /** 按分を全取引へ一括再適用(自動でも実行されるが明示ボタン用) */
   recalcAnbun: () => void;
 
@@ -151,6 +192,10 @@ function emptyData(): AppData {
     partners: [],
     payrolls: [],
     yearEndAdjustments: [],
+    lockedYears: [],
+    fundAccounts: [],
+    reconciliations: [],
+    rentPayees: [],
   };
 }
 
@@ -192,7 +237,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [dataCorrupted, setDataCorrupted] = useState(false);
+  const [lockNotice, setLockNotice] = useState<LockNotice | null>(null);
   const skipSave = useRef(true);
+  // 最新のデータ。変更は必ずこれを起点に計算する(同じイベント内で続けて変更しても前の変更を失わない。
+  // 変更の可否(ロック判定)を state 更新の外で同期的に決めるためにも使う)
+  const dataRef = useRef<AppData>(data);
+  const commit = useCallback((next: AppData) => {
+    dataRef.current = next;
+    setData(next);
+  }, []);
 
   // 初回マウント時にlocalStorageから読込(SSRと初回描画の不一致を避ける)
   useEffect(() => {
@@ -200,10 +253,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     // 保存後に按分設定だけ変わっているケースに備えて読込時にも再計算
     loaded.transactions = applyAnbun(loaded.transactions, loaded.anbunSettings);
     skipSave.current = true;
-    setData(loaded);
+    commit(loaded);
     if (corrupted) setDataCorrupted(true);
     setReady(true);
-  }, []);
+  }, [commit]); // commit は不変(初回の1回だけ実行される)
 
   // 別タブでの変更を反映する(複数タブで同時編集したとき、後から保存したタブが
   // 相手の変更を丸ごと上書きして帳簿が巻き戻るのを防ぐ)。
@@ -217,14 +270,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         received.transactions = applyAnbun(received.transactions, received.anbunSettings);
         // 受け取った内容は保存済みの値そのものなので、保存し直さない
         skipSave.current = true;
-        setData(received);
+        commit(received);
       } catch {
         // 壊れた値は無視して自タブのデータを守る
       }
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, []);
+  }, [commit]);
 
   // 変更を保存(読込直後の1回はスキップ)
   useEffect(() => {
@@ -242,13 +295,30 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [data, ready]);
 
-  /** transactions / anbunSettings を変更するときは必ず按分を再計算して整合を保つ */
-  const mutate = useCallback((fn: (prev: AppData) => AppData) => {
-    setData((prev) => {
-      const next = fn(prev);
-      return { ...next, transactions: applyAnbun(next.transactions, next.anbunSettings) };
-    });
-  }, []);
+  /**
+   * データを変更する唯一の入口。
+   * - transactions / anbunSettings の変更に備えて必ず按分を再計算して整合を保つ
+   * - ロック中の年の帳簿の数字が変わる変更は保存せず、通知を出して false を返す
+   *   (replaceAll = 復元・サンプル読込・全削除はデータを丸ごと入れ替えるので判定しない)
+   */
+  const mutate = useCallback(
+    (fn: (prev: AppData) => AppData, opts?: { replaceAll?: boolean }): boolean => {
+      const prev = dataRef.current;
+      const raw = fn(prev);
+      if (raw === prev) return true;
+      const next = { ...raw, transactions: applyAnbun(raw.transactions, raw.anbunSettings) };
+      if (!opts?.replaceAll) {
+        const years = changedLockedYears(prev, next);
+        if (years.length > 0) {
+          setLockNotice({ years, at: Date.now() });
+          return false;
+        }
+      }
+      commit(next);
+      return true;
+    },
+    [commit],
+  );
 
   const store = useMemo<Store>(() => {
     return {
@@ -268,13 +338,85 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       partners: data.partners,
       payrolls: data.payrolls,
       yearEndAdjustments: data.yearEndAdjustments,
+      lockedYears: data.lockedYears,
+      lockNotice,
+      dismissLockNotice: () => setLockNotice(null),
 
-      addTransactions: (txs) =>
+      setYearLocked: (year, locked) => {
         mutate((prev) => ({
+          ...prev,
+          lockedYears: locked
+            ? [...new Set([...prev.lockedYears, year])].sort((a, b) => a - b)
+            : prev.lockedYears.filter((y) => y !== year),
+        }));
+      },
+
+      fundAccounts: data.fundAccounts,
+      addFundAccount: (fund, name) => {
+        const trimmed = name.trim().slice(0, 30);
+        if (!trimmed) return;
+        mutate((prev) => ({
+          ...prev,
+          fundAccounts: [...prev.fundAccounts, { id: uid(), fund, name: trimmed, createdAt: Date.now() }],
+        }));
+      },
+      renameFundAccount: (id, name) => {
+        const trimmed = name.trim().slice(0, 30);
+        if (!trimmed) return;
+        mutate((prev) => ({
+          ...prev,
+          fundAccounts: prev.fundAccounts.map((a) => (a.id === id ? { ...a, name: trimmed } : a)),
+        }));
+      },
+      deleteFundAccount: (id) =>
+        mutate((prev) => ({
+          ...prev,
+          fundAccounts: prev.fundAccounts.filter((a) => a.id !== id),
+        })),
+      reconciliations: data.reconciliations,
+      addReconciliation: (r) =>
+        mutate((prev) => ({
+          ...prev,
+          reconciliations: [...prev.reconciliations, { ...r, id: uid(), createdAt: Date.now() }],
+        })),
+      deleteReconciliation: (id) =>
+        mutate((prev) => ({
+          ...prev,
+          reconciliations: prev.reconciliations.filter((r) => r.id !== id),
+        })),
+
+      rentPayees: data.rentPayees,
+      addRentPayee: (p) =>
+        mutate((prev) => ({
+          ...prev,
+          rentPayees: [...prev.rentPayees, { ...p, id: uid(), createdAt: Date.now() }],
+        })),
+      updateRentPayee: (id, patch) =>
+        mutate((prev) => ({
+          ...prev,
+          rentPayees: prev.rentPayees.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        })),
+      deleteRentPayee: (id) =>
+        mutate((prev) => ({ ...prev, rentPayees: prev.rentPayees.filter((p) => p.id !== id) })),
+
+      addTransactions: (txs) => {
+        // ロック中の年の取引(CSVに前年分が混ざっていた等)は追加せず、件数を知らせる
+        const locked = dataRef.current.lockedYears;
+        const accepted = txs.filter((t) => !isLockedDate(locked, t.date));
+        const rejected = txs.filter((t) => isLockedDate(locked, t.date));
+        if (rejected.length > 0) {
+          setLockNotice({
+            years: [...new Set(rejected.map((t) => Number(t.date.slice(0, 4))))].sort(),
+            skipped: rejected.length,
+            at: Date.now(),
+          });
+        }
+        if (accepted.length === 0) return 0;
+        const ok = mutate((prev) => ({
           ...prev,
           transactions: [
             ...prev.transactions,
-            ...txs.map((t, i) => ({
+            ...accepted.map((t, i) => ({
               ...t,
               id: uid(),
               createdAt: Date.now() + i,
@@ -282,7 +424,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               anbunApplied: false,
             })),
           ],
-        })),
+        }));
+        return ok ? accepted.length : 0;
+      },
 
       updateTransaction: (id, patch) =>
         mutate((prev) => ({
@@ -298,7 +442,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       deleteTransactions: (ids) => {
         const set = new Set(ids);
-        mutate((prev) => ({
+        return mutate((prev) => ({
           ...prev,
           transactions: prev.transactions.filter((t) => !set.has(t.id)),
         }));
@@ -324,10 +468,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       },
 
       reapplyRules: () => {
-        // StrictModeでupdaterが2回呼ばれても件数が狂わないよう、先に計算してから反映する
-        const { transactions, updated } = applyRulesToTransactions(data.transactions, data.rules);
-        if (updated > 0) mutate((prev) => ({ ...prev, transactions }));
-        return updated;
+        // ロック中の年の未仕訳は対象外(仕訳すると申告済みの帳簿が変わるため)
+        const cur = dataRef.current;
+        const open = cur.transactions.filter((t) => !isLockedDate(cur.lockedYears, t.date));
+        const { transactions, updated } = applyRulesToTransactions(open, cur.rules);
+        if (updated === 0) return 0;
+        const byId = new Map(transactions.map((t) => [t.id, t]));
+        const ok = mutate((prev) => ({
+          ...prev,
+          transactions: prev.transactions.map((t) => byId.get(t.id) ?? t),
+        }));
+        return ok ? updated : 0;
       },
 
       addRule: (rule) => mutate((prev) => ({ ...prev, rules: [...prev.rules, { ...rule, id: uid() }] })),
@@ -353,8 +504,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       addAnbunSetting: (s) =>
         mutate((prev) => {
-          // 同じ勘定科目の設定は1件のみ(既存があれば置き換え)
-          const rest = prev.anbunSettings.filter((x) => x.account !== s.account);
+          // 同じ勘定科目・同じ適用開始年の設定は1件のみ(既存があれば置き換え)
+          const rest = prev.anbunSettings.filter(
+            (x) => !(x.account === s.account && x.fromYear === s.fromYear),
+          );
           return { ...prev, anbunSettings: [...rest, { ...s, id: uid() }] };
         }),
 
@@ -370,7 +523,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           anbunSettings: prev.anbunSettings.filter((s) => s.id !== id),
         })),
 
-      recalcAnbun: () => mutate((prev) => prev),
+      // 同じオブジェクトを返すと「変更なし」とみなされるため、複製して再計算させる
+      recalcAnbun: () => {
+        mutate((prev) => ({ ...prev }));
+      },
 
       setOpeningBalance: (ob) =>
         mutate((prev) => ({
@@ -403,7 +559,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         mutate((prev) => ({ ...prev, issuer: { ...prev.issuer, ...patch } })),
 
       registerInvoiceSales: (invoiceId) => {
-        const inv = data.invoices.find((i) => i.id === invoiceId);
+        const inv = dataRef.current.invoices.find((i) => i.id === invoiceId);
         if (!inv) return 0;
         // StrictModeでupdaterが2回呼ばれても同じ結果になるよう、取引は先に確定させる
         const txs = buildInvoiceTransactions(inv).map((t, i) => ({
@@ -415,14 +571,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }));
         if (txs.length === 0) return 0;
         const ids = txs.map((t) => t.id);
-        mutate((prev) => ({
+        const ok = mutate((prev) => ({
           ...prev,
           transactions: [...prev.transactions, ...txs],
           invoices: prev.invoices.map((i) =>
             i.id === invoiceId ? { ...i, linkedTxIds: ids } : i,
           ),
         }));
-        return txs.length;
+        return ok ? txs.length : 0;
       },
 
       addAsset: (a) =>
@@ -472,12 +628,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           createdAt: Date.now(),
           ...(txs.length > 0 ? { linkedTxIds: txs.map((t) => t.id) } : {}),
         };
-        mutate((prev) => ({
+        const ok = mutate((prev) => ({
           ...prev,
           transactions: [...prev.transactions, ...txs],
           payrolls: [...prev.payrolls, record],
         }));
-        return txs.length;
+        return ok ? txs.length : 0;
       },
 
       setYearEndAdjustment: (entry) =>
@@ -536,21 +692,22 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         mutate((prev) => ({ ...prev, partners: prev.partners.filter((p) => p.id !== id) })),
 
       loadDemoData: () => {
-        mutate(() => buildDemoData());
+        mutate(() => buildDemoData(), { replaceAll: true });
       },
 
       clearAll: () => {
-        mutate(() => emptyData());
+        mutate(() => emptyData(), { replaceAll: true });
       },
 
       // AppData全体を丸ごと置き換える。スライスを列挙しない(新フィールドの追加漏れを防ぐ)
       restoreData: (d) => {
-        mutate(() => ({ ...d }));
+        mutate(() => ({ ...d }), { replaceAll: true });
       },
 
-      exportData: () => data,
+      // 同じイベント内の直前の変更も含めて返す(描画前でも最新)
+      exportData: () => dataRef.current,
     };
-  }, [data, mutate, ready, saveError, dataCorrupted]);
+  }, [data, mutate, ready, saveError, dataCorrupted, lockNotice]);
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }

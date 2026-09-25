@@ -4,9 +4,22 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, btn, Card, EmptyState, input, PageHeader, selectCls } from '@/components/ui';
 import { accountLabel, EXPENSE_ACCOUNTS } from '@/lib/accounts';
 import { availableYears, transactionsOfYear } from '@/lib/aggregate';
+import { anbunSettingFor } from '@/lib/anbun';
 import { yen } from '@/lib/format';
 import { useStore } from '@/lib/store';
-import { AnbunType } from '@/lib/types';
+import { AnbunSetting, AnbunType } from '@/lib/types';
+
+/** 適用期間の表示(次の設定の開始年の前年まで) */
+function periodLabel(s: AnbunSetting, all: AnbunSetting[]): string {
+  const next = all
+    .filter((x) => x.account === s.account && (x.fromYear ?? -Infinity) > (s.fromYear ?? -Infinity))
+    .map((x) => x.fromYear!)
+    .sort((a, b) => a - b)[0];
+  const from = s.fromYear ? `${s.fromYear}年` : '';
+  const to = next !== undefined ? `${next - 1}年` : '';
+  if (!from && !to) return 'すべての年';
+  return `${from}〜${to}`;
+}
 
 export default function AnbunPage() {
   const store = useStore();
@@ -14,7 +27,11 @@ export default function AnbunPage() {
   const [type, setType] = useState<AnbunType>('percent');
   const [value, setValue] = useState('');
   const [memo, setMemo] = useState('');
+  /** 適用開始年('' = すべての年) */
+  const [fromYear, setFromYear] = useState('');
   const [message, setMessage] = useState<string | null>(null);
+  /** ロック中の年が変わるため保存できなかったときの、代わりの適用開始年の提案 */
+  const [lockSuggestion, setLockSuggestion] = useState<number | null>(null);
   const [year, setYear] = useState(() => new Date().getFullYear());
 
   const years = useMemo(
@@ -22,10 +39,21 @@ export default function AnbunPage() {
     [store.transactions],
   );
 
-  // 科目を切り替えたら既存設定の根拠メモを引き継ぐ(上書き保存でメモが消えないように)
+  // 科目を切り替えたら、既存の設定があれば今年からの新しい設定を既定にする
+  // (既存の設定を上書きすると過去の年の経費まで変わるため)
   useEffect(() => {
-    setMemo(store.anbunSettings.find((s) => s.account === account)?.memo ?? '');
+    const has = store.anbunSettings.some((s) => s.account === account);
+    setFromYear(has ? String(new Date().getFullYear()) : '');
+    setLockSuggestion(null);
   }, [account, store.anbunSettings]);
+
+  // 同じ科目・適用開始年の既存設定の根拠メモを引き継ぐ(上書き保存でメモが消えないように)
+  const sameSetting = store.anbunSettings.find(
+    (s) => s.account === account && (s.fromYear ?? '') === (fromYear === '' ? '' : Number(fromYear)),
+  );
+  useEffect(() => {
+    setMemo(sameSetting?.memo ?? '');
+  }, [sameSetting]);
 
   /** 選択年の科目別実績(設定の効果プレビュー用) */
   const preview = useMemo(() => {
@@ -43,34 +71,52 @@ export default function AnbunPage() {
     return byAccount;
   }, [store.transactions, year]);
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const save = (from: string) => {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return;
     if (type === 'percent' && n > 100) {
       setMessage('事業割合は100%以下で入力してください。');
       return;
     }
-    store.addAnbunSetting({
+    const ok = store.addAnbunSetting({
       account,
       type,
       value: Math.round(n),
+      ...(from !== '' ? { fromYear: Number(from) } : {}),
       ...(memo.trim() ? { memo: memo.trim() } : {}),
     });
+    if (!ok) {
+      // 申告済み(ロック中)の年の経費が変わる → ロック年の翌年からの設定を提案する
+      setLockSuggestion(Math.max(...store.lockedYears) + 1);
+      setMessage(null);
+      return;
+    }
+    setLockSuggestion(null);
     setValue('');
     setMemo('');
     setMessage(
       `「${accountLabel(account)}」の按分設定を保存しました(${
+        from !== '' ? `${from}年から ` : ''
+      }${
         type === 'percent' ? `事業割合 ${Math.round(n)}%` : `毎月 ${yen(Math.round(n))} まで経費計上`
-      })。全取引へ自動で再適用されています。`,
+      })。該当する年の取引へ自動で再適用されています。`,
     );
+  };
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    save(fromYear);
   };
 
   if (!store.ready) {
     return <div className="py-24 text-center text-sm text-slate-500">読み込み中…</div>;
   }
 
-  const existingForAccount = store.anbunSettings.find((s) => s.account === account);
+  const sortedSettings = [...store.anbunSettings].sort(
+    (a, b) =>
+      a.account.localeCompare(b.account) || (a.fromYear ?? -Infinity) - (b.fromYear ?? -Infinity),
+  );
+  const yearOptions = [...new Set([...years, new Date().getFullYear() + 1])].sort((a, b) => a - b);
 
   return (
     <>
@@ -80,7 +126,7 @@ export default function AnbunPage() {
       />
 
       <div className="space-y-6">
-        <Card title="按分ルールを登録(科目ごとに1件)">
+        <Card title="按分ルールを登録(科目 × 適用開始年ごとに1件)">
           <form onSubmit={submit} className="flex flex-wrap items-end gap-3">
             <div>
               <label htmlFor="anbun-account" className="mb-1 block text-xs font-medium text-slate-500">
@@ -143,6 +189,27 @@ export default function AnbunPage() {
                 </span>
               </div>
             </div>
+            <div>
+              <label htmlFor="anbun-from-year" className="mb-1 block text-xs font-medium text-slate-500">
+                適用開始年
+              </label>
+              <select
+                id="anbun-from-year"
+                className={selectCls}
+                value={fromYear}
+                onChange={(e) => {
+                  setFromYear(e.target.value);
+                  setLockSuggestion(null);
+                }}
+              >
+                <option value="">すべての年</option>
+                {yearOptions.map((y) => (
+                  <option key={y} value={y}>
+                    {y}年から
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="min-w-56 flex-1">
               <label htmlFor="anbun-memo" className="mb-1 block text-xs font-medium text-slate-500">
                 根拠メモ(任意・税務調査で説明できるように)
@@ -158,14 +225,37 @@ export default function AnbunPage() {
               />
             </div>
             <button type="submit" className={btn.primary}>
-              {existingForAccount ? '上書き保存' : '保存'}
+              {sameSetting ? '上書き保存' : '保存'}
             </button>
           </form>
-          {existingForAccount && (
+          {sameSetting && (
             <p className="mt-2 text-xs text-amber-700">
-              ※「{accountLabel(account)}」には既に按分設定があります。保存すると置き換えられます。
+              ※「{accountLabel(account)}」の{fromYear ? `${fromYear}年からの` : 'すべての年の'}
+              設定は既にあります。保存すると置き換えられ、その期間の取引の経費額が変わります。
             </p>
           )}
+          {lockSuggestion !== null && (
+            <div className="mt-3">
+              <Alert tone="warning">
+                この設定を保存すると、申告済み(ロック中)の{store.lockedYears.join('・')}
+                年分の経費が変わるため保存できませんでした。
+                <button
+                  type="button"
+                  className={`${btn.small} ml-2`}
+                  onClick={() => {
+                    setFromYear(String(lockSuggestion));
+                    save(String(lockSuggestion));
+                  }}
+                >
+                  {lockSuggestion}年から適用する設定として保存
+                </button>
+              </Alert>
+            </div>
+          )}
+          <p className="mt-2 text-xs leading-relaxed text-slate-500">
+            引っ越しや働き方の変化で事業割合が変わったときは、既存の設定を上書きせず「適用開始年」を指定して新しい設定を追加してください。
+            過去の年(申告済みの年)の経費はそのまま残ります。
+          </p>
           <div className="mt-4 grid gap-2 text-xs leading-relaxed text-slate-500 sm:grid-cols-2">
             <div className="rounded-lg bg-slate-50 p-3">
               <strong className="text-slate-600">パーセント指定</strong> ──
@@ -221,6 +311,7 @@ export default function AnbunPage() {
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
                     <th className="py-2 pr-2 font-medium">勘定科目</th>
+                    <th className="px-2 py-2 font-medium">適用期間</th>
                     <th className="px-2 py-2 font-medium">計算方法</th>
                     <th className="px-2 py-2 text-right font-medium">設定値</th>
                     <th className="px-2 py-2 font-medium">根拠メモ</th>
@@ -231,11 +322,20 @@ export default function AnbunPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {store.anbunSettings.map((s) => {
-                    const p = preview.get(s.account);
+                  {sortedSettings.map((s) => {
+                    // 試算は、選択した年にこの設定が適用される場合だけ表示する
+                    const effective =
+                      anbunSettingFor(
+                        store.anbunSettings.filter((x) => x.account === s.account),
+                        year,
+                      ) === s;
+                    const p = effective ? preview.get(s.account) : undefined;
                     return (
                       <tr key={s.id} className="border-b border-slate-100 hover:bg-slate-50/60">
                         <td className="py-2 pr-2 font-medium">{accountLabel(s.account)}</td>
+                        <td className="px-2 py-2 text-xs whitespace-nowrap text-slate-600">
+                          {periodLabel(s, store.anbunSettings)}
+                        </td>
                         <td className="px-2 py-2">
                           <span
                             className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
@@ -269,7 +369,7 @@ export default function AnbunPage() {
                             onClick={() => {
                               if (
                                 confirm(
-                                  `「${accountLabel(s.account)}」の按分設定を削除しますか?\n削除すると該当科目は全額経費計上に戻ります。`,
+                                  `「${accountLabel(s.account)}」の按分設定(${periodLabel(s, store.anbunSettings)})を削除しますか?\n削除すると、その期間の取引は前の設定(なければ全額経費計上)に戻ります。`,
                                 )
                               ) {
                                 store.deleteAnbunSetting(s.id);

@@ -92,7 +92,7 @@ export default function PayrollPage() {
   const save = () => {
     if (!employee.trim() || !date || grossNum <= 0) return;
     const w = Math.min(effectiveWithholding, grossNum - siNum);
-    store.registerPayroll({
+    const created = store.registerPayroll({
       employee: employee.trim(),
       date,
       gross: grossNum,
@@ -101,6 +101,7 @@ export default function PayrollPage() {
       table,
       ...(note.trim() ? { note: note.trim() } : {}),
     });
+    if (created === 0) return; // 申告済み(ロック中)の年(理由は上部のお知らせに出る)
     setMessage(
       `給与を記帳しました(総支給 ${yen(grossNum)}` +
         (siNum > 0 ? `・社会保険料等 ${yen(siNum)}` : '') +
@@ -358,7 +359,7 @@ export default function PayrollPage() {
               disabled={!payDate || (Math.round(Number(payAmount)) || 0) <= 0}
               onClick={() => {
                 const n = Math.round(Number(payAmount));
-                store.addTransactions([
+                const added = store.addTransactions([
                   {
                     date: payDate,
                     amount: n,
@@ -370,6 +371,7 @@ export default function PayrollPage() {
                     fund: 'bank',
                   },
                 ]);
+                if (added === 0) return; // ロック中の年(理由は上部のお知らせに出る)
                 setPayAmount('');
                 setMessage(`預り金の納付 ${yen(n)} を記帳しました((借)預り金 /(貸)普通預金)。`);
               }}

@@ -27,8 +27,8 @@ const METHODS: { id: TaxSettings['method']; label: string; hint: string }[] = [
   },
   {
     id: 'special20',
-    label: '2割特例',
-    hint: '売上の消費税 × 20% を納付(インボイス登録を機に課税事業者になった小規模事業者向け・届出不要。個人は2026年分の申告まで)',
+    label: '2割特例・3割特例',
+    hint: '売上の消費税 × 20%(2026年分まで)/ 30%(個人の2027・2028年分)を納付(インボイス登録を機に課税事業者になった小規模事業者向け・届出不要)',
   },
 ];
 
@@ -148,16 +148,21 @@ export default function TaxPage() {
           <Alert tone="warning">
             {year}年の課税売上高が<strong>1,000万円を超えています</strong>(
             {yen(taxableSales)})。原則として{year + 2}
-            年から課税事業者になります(納税資金の準備と、簡易課税・2割特例の検討を)。
+            年から課税事業者になります(納税資金の準備と、簡易課税の届出の検討を)。
           </Alert>
         )}
 
-        {settings.taxable && settings.method === 'special20' && !summary.special20Available && (
+        {settings.taxable && settings.method === 'special20' && summary.specialRate === null && (
           <Alert tone="warning">
-            <strong>2割特例は{year}年分には適用できません</strong>
-            (個人事業者は2026年分の申告が最後です)。この年分の納付見込みは
+            <strong>2割特例・3割特例は{year}年分には適用できません</strong>
+            (個人事業者は2割特例が2026年分まで、3割特例が2027・2028年分まで)。この年分の納付見込みは
             <strong>本則課税</strong>で表示しています。簡易課税を使う場合は事前の届出が必要です。
-            なお2027・2028年分は個人事業者向けの<strong>3割特例</strong>(令和8年度改正)がありますが、本アプリでは未対応です。
+          </Alert>
+        )}
+        {settings.taxable && settings.method === 'special20' && summary.specialRate === 30 && (
+          <Alert tone="info">
+            {year}年分は2割特例が終わり、個人事業者向けの<strong>3割特例</strong>(令和8年度改正・売上の消費税の3割を納付)で計算しています。
+            2029年分からは本則課税か簡易課税になるため、簡易課税を選ぶ場合は事前に届出が必要です。
           </Alert>
         )}
 
@@ -179,8 +184,10 @@ export default function TaxPage() {
           />
           <StatCard
             label={`納付見込み(${
-              settings.method === 'special20' && !summary.special20Available
-                ? '本則課税・2割特例は対象外'
+              settings.method === 'special20'
+                ? summary.specialRate === null
+                  ? '本則課税・特例は対象外'
+                  : `${summary.specialRate / 10}割特例`
                 : (METHODS.find((m) => m.id === settings.method)?.label ?? '')
             })`}
             value={yen(Math.max(0, summary.paySelected))}
@@ -217,13 +224,13 @@ export default function TaxPage() {
                     },
                     {
                       id: 'special20',
-                      label: '2割特例',
-                      deduction: summary.salesTax - summary.paySpecial20,
-                      pay: summary.paySpecial20,
+                      label: summary.specialRate === 30 ? '3割特例' : '2割特例',
+                      deduction: summary.salesTax - summary.paySpecial,
+                      pay: summary.paySpecial,
                     },
                   ] as const
                 ).map((row) => {
-                  const expired = row.id === 'special20' && !summary.special20Available;
+                  const expired = row.id === 'special20' && summary.specialRate === null;
                   return (
                     <tr
                       key={row.id}
@@ -239,7 +246,7 @@ export default function TaxPage() {
                       </td>
                       {expired ? (
                         <td className="px-2 py-2 text-right text-xs" colSpan={3}>
-                          この年分は対象外(個人は2026年分まで)
+                          この年分は対象外(個人は2割特例が2026年分まで・3割特例が2028年分まで)
                         </td>
                       ) : (
                         <>
@@ -275,6 +282,7 @@ export default function TaxPage() {
             </li>
             <li>
               <strong>2割特例</strong>は、インボイス登録がなければ免税事業者だった小規模事業者(基準期間の課税売上高1,000万円以下など)が対象です(2026年9月30日を含む課税期間まで)。
+              その後、個人事業者は<strong>3割特例</strong>(2027・2028年分。売上の消費税の3割を納付)を使えます(令和8年度改正)。
             </li>
             <li>
               10万円以上の備品・車両など<strong>「固定資産の取得(振替)」</strong>の取引は、減価償却ではなく
@@ -299,7 +307,9 @@ export default function TaxPage() {
               ? '本則課税'
               : taxReturn.applied === 'simplified'
                 ? `簡易課税 第${settings.simplifiedType}種`
-                : '2割特例'
+                : summary.specialRate === 30
+                  ? '3割特例'
+                  : '2割特例'
           }・割戻し計算)`}
         >
           <p className="mb-3 text-xs leading-relaxed text-slate-500">
@@ -332,7 +342,7 @@ export default function TaxPage() {
                     ? '適格分は全額・適格なしは経過措置の割合(80%/70%/50%/30%)'
                     : taxReturn.applied === 'simplified'
                       ? `売上の消費税 × みなし仕入率${DEEMED_PURCHASE_RATES[settings.simplifiedType]}%`
-                      : '特別控除(売上の消費税 × 80%)'}
+                      : `特別控除(売上の消費税 × ${summary.specialRate === 30 ? 70 : 80}%)`}
                 </td>
               </tr>
               <tr className="border-b border-slate-100 font-medium">

@@ -32,6 +32,8 @@ import {
   StoredFile,
 } from '@/lib/files';
 import { dateLabel, today, yen } from '@/lib/format';
+import { hasMultiple, resolveSub, SubFund, subAccountsOf } from '@/lib/fundAccounts';
+import { isLockedDate } from '@/lib/lock';
 import { suggestAccount } from '@/lib/rules';
 import { useStore } from '@/lib/store';
 import { effectiveTaxCategory, isTaxRelevant, TAX_CATEGORY_LABELS } from '@/lib/tax';
@@ -68,6 +70,8 @@ export default function TransactionsPage() {
   const [mode, setMode] = useState<ImportMode>('auto');
   /** 取込明細の決済手段(銀行明細=普通預金 / カード明細=クレジットカード未払金) */
   const [importFund, setImportFund] = useState<FundId>('bank');
+  /** 取込先の口座・カード(口座を分けているときだけ使う。'' = 既定の口座) */
+  const [importSub, setImportSub] = useState('');
   const [rawRows, setRawRows] = useState<ParsedRow[] | null>(null);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
   /** CSV取込パネル内に表示するメッセージ */
@@ -185,7 +189,7 @@ export default function TransactionsPage() {
     const rows = preview.filter((r) => r.include);
     if (rows.length === 0) return;
     const autoCount = rows.filter((r) => r.account !== null).length;
-    store.addTransactions(
+    const added = store.addTransactions(
       rows.map((r) => ({
         date: r.date,
         amount: r.amount,
@@ -195,13 +199,16 @@ export default function TransactionsPage() {
         approved: false,
         source: 'csv' as const,
         fund: importFund,
+        ...(importSub && hasMultiple(store.fundAccounts, importFund) ? { fundAccount: importSub } : {}),
       })),
     );
     setPreview(null);
     setRawRows(null);
     if (fileRef.current) fileRef.current.value = '';
     setMessage(
-      `${rows.length}件を取り込みました(自動仕訳 ${autoCount}件 / 未仕訳 ${rows.length - autoCount}件)。内容を確認して承認してください。`,
+      added === rows.length
+        ? `${rows.length}件を取り込みました(自動仕訳 ${autoCount}件 / 未仕訳 ${rows.length - autoCount}件)。内容を確認して承認してください。`
+        : `${added}件を取り込みました。申告済み(ロック中)の年の${rows.length - added}件は取り込んでいません。`,
     );
   };
 
@@ -305,7 +312,10 @@ export default function TransactionsPage() {
                 id="tx-import-fund"
                 className={selectCls}
                 value={importFund}
-                onChange={(e) => setImportFund(e.target.value as FundId)}
+                onChange={(e) => {
+                  setImportFund(e.target.value as FundId);
+                  setImportSub('');
+                }}
               >
                 {importFundOptions(mode).map((f) => (
                   <option key={f} value={f}>
@@ -313,6 +323,20 @@ export default function TransactionsPage() {
                   </option>
                 ))}
               </select>
+              {hasMultiple(store.fundAccounts, importFund) && (
+                <select
+                  aria-label="取込先の口座・カード"
+                  className={`${selectCls} mt-1 block`}
+                  value={resolveSub(store.fundAccounts, importFund as SubFund, importSub) ?? ''}
+                  onChange={(e) => setImportSub(e.target.value)}
+                >
+                  {subAccountsOf(store.fundAccounts, importFund as SubFund).map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               <p className="mt-1 max-w-56 text-xs text-slate-500">
                 カード明細は「クレジットカード(未払金)」のまま取り込むと、購入時に経費・引落し時に未払金の決済として二重計上なく記帳されます。
               </p>
@@ -680,17 +704,20 @@ function AccountSelect({
   onChange,
   id,
   'aria-label': ariaLabel,
+  disabled,
 }: {
   type: TxType;
   value: string | null;
   onChange: (v: string | null) => void;
   id?: string;
   'aria-label'?: string;
+  disabled?: boolean;
 }) {
   return (
     <select
       id={id}
       aria-label={ariaLabel}
+      disabled={disabled}
       className={`${selectCls} ${value === null ? 'border-amber-400 bg-amber-50' : ''}`}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
@@ -718,13 +745,14 @@ function AccountSelect({
 }
 
 /** 決済手段セレクト(取引一覧の行用) */
-function FundSelect({ t }: { t: Transaction }) {
+function FundSelect({ t, disabled }: { t: Transaction; disabled?: boolean }) {
   const store = useStore();
   const options = fundsOf(t.type);
   const known = options.some((f) => f.id === t.fund);
   return (
     <select
       aria-label={`${t.description} の決済手段`}
+      disabled={disabled}
       className={selectCls}
       value={t.fund}
       title="この取引で動いた資金(複式仕訳の相手勘定)"
@@ -741,17 +769,38 @@ function FundSelect({ t }: { t: Transaction }) {
 }
 
 /** 資金移動の相手側(移動先/移動元)セレクト */
-function CounterFundControl({ t }: { t: Transaction }) {
+function CounterFundControl({ t, disabled }: { t: Transaction; disabled?: boolean }) {
   const store = useStore();
+  if (t.account === 'card_payment') {
+    // どのカードの引落しか(カードを分けているときだけ)
+    if (!hasMultiple(store.fundAccounts, 'card')) return null;
+    return (
+      <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+        <span>引落しカード:</span>
+        <SubAccountSelect
+          fund="card"
+          value={t.counterAccount}
+          inline
+          aria-label={`${t.description} の引落しカード`}
+          disabled={disabled}
+          onChange={(id) => store.updateTransaction(t.id, { counterAccount: id })}
+        />
+      </div>
+    );
+  }
   if (t.account !== 'fund_transfer') return null;
   const counter = t.counterFund ?? (t.fund === 'cash' ? 'bank' : 'cash');
-  const options = (['bank', 'cash'] as FundId[]).filter((f) => f !== t.fund);
+  // 口座を分けていれば、普通預金 → 普通預金(口座間の振替)も選べる
+  const options = (['bank', 'cash'] as FundId[]).filter(
+    (f) => f !== t.fund || hasMultiple(store.fundAccounts, f),
+  );
   if (!options.includes(counter)) options.unshift(counter);
   return (
-    <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+    <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
       <span>{t.type === 'expense' ? '移動先:' : '移動元:'}</span>
       <select
         aria-label={`${t.description} の${t.type === 'expense' ? '移動先' : '移動元'}`}
+        disabled={disabled}
         className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600"
         value={counter}
         onChange={(e) => store.updateTransaction(t.id, { counterFund: e.target.value as FundId })}
@@ -762,7 +811,57 @@ function CounterFundControl({ t }: { t: Transaction }) {
           </option>
         ))}
       </select>
+      <SubAccountSelect
+        fund={counter}
+        value={t.counterAccount}
+        inline
+        aria-label={`${t.description} の${t.type === 'expense' ? '移動先' : '移動元'}の口座`}
+        disabled={disabled}
+        onChange={(id) => store.updateTransaction(t.id, { counterAccount: id })}
+      />
     </div>
+  );
+}
+
+/** 口座・カード(補助科目)の選択。その資金に口座が2つ以上あるときだけ表示する */
+function SubAccountSelect({
+  fund,
+  value,
+  onChange,
+  disabled,
+  inline,
+  'aria-label': ariaLabel,
+}: {
+  fund: FundId;
+  value: string | undefined;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+  /** 行内の小さい表示(資金移動・引落しカードの相手側) */
+  inline?: boolean;
+  'aria-label': string;
+}) {
+  const store = useStore();
+  if (!hasMultiple(store.fundAccounts, fund)) return null;
+  const subs = subAccountsOf(store.fundAccounts, fund as SubFund);
+  return (
+    <select
+      aria-label={ariaLabel}
+      disabled={disabled}
+      title="口座・カード(帳簿・決算書ページで登録)"
+      className={
+        inline
+          ? 'rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600'
+          : 'mt-1 block w-full rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600'
+      }
+      value={resolveSub(store.fundAccounts, fund as SubFund, value) ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {subs.map((a) => (
+        <option key={a.id} value={a.id}>
+          {a.name}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -770,7 +869,7 @@ function CounterFundControl({ t }: { t: Transaction }) {
  * 借入金の返済の内訳入力。返済額のうち利息は利子割引料(必要経費)、残りの元金が借入金の減少になる。
  * 入力中の値は手元に持ち、確定(フォーカスが外れる・Enter)したときだけ保存する。
  */
-function InterestControl({ t }: { t: Transaction }) {
+function InterestControl({ t, disabled }: { t: Transaction; disabled?: boolean }) {
   const store = useStore();
   const saved = repaymentInterest(t);
   const [value, setValue] = useState(saved > 0 ? String(saved) : '');
@@ -791,6 +890,7 @@ function InterestControl({ t }: { t: Transaction }) {
       <label htmlFor={`interest-${t.id}`}>うち利息</label>
       <input
         id={`interest-${t.id}`}
+        disabled={disabled}
         type="number"
         min={0}
         max={t.amount}
@@ -810,7 +910,7 @@ function InterestControl({ t }: { t: Transaction }) {
 }
 
 /** 消費税の税区分と適格請求書チェック(課税事業者の設定時のみ表示) */
-function TaxControls({ t }: { t: Transaction }) {
+function TaxControls({ t, disabled }: { t: Transaction; disabled?: boolean }) {
   const store = useStore();
   if (!store.taxSettings.taxable) return null;
   // 振替科目は消費税の対象外。ただし「固定資産の取得」は購入時の課税仕入なので税区分を選べる
@@ -821,6 +921,7 @@ function TaxControls({ t }: { t: Transaction }) {
     <div className="mt-1 flex flex-wrap items-center gap-2">
       <select
         aria-label={`${t.description} の税区分`}
+        disabled={disabled}
         className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px] text-slate-600"
         value={cat}
         title="消費税の税区分(科目から自動判定。住宅家賃の按分など必要に応じて変更)"
@@ -841,6 +942,7 @@ function TaxControls({ t }: { t: Transaction }) {
         >
           <input
             type="checkbox"
+            disabled={disabled}
             checked={t.qualifiedInvoice !== false}
             onChange={(e) =>
               store.updateTransaction(t.id, {
@@ -881,13 +983,23 @@ function TxRow({
 }) {
   const store = useStore();
   const anbunNote = t.type === 'expense' && t.anbunApplied && t.businessAmount !== t.amount;
+  // 申告済み(ロック中)の年の取引は、帳簿の数字が変わる操作をできないようにする(承認・証憑は可)
+  const locked = isLockedDate(store.lockedYears, t.date);
 
   return (
-    <tr className="border-b border-slate-100 hover:bg-slate-50/60">
-      <td className="tabular py-2 pr-2 whitespace-nowrap">{dateLabel(t.date)}</td>
+    <tr className={`border-b border-slate-100 hover:bg-slate-50/60 ${locked ? 'bg-slate-50/80' : ''}`}>
+      <td className="tabular py-2 pr-2 whitespace-nowrap">
+        {dateLabel(t.date)}
+        {locked && (
+          <span className="ml-1" title="申告済み(ロック中)の年の取引です。帳簿・決算書ページでロックを解除すると編集できます">
+            🔒
+          </span>
+        )}
+      </td>
       <td className="px-2 py-2">
         <button
           type="button"
+          disabled={locked}
           className={`rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors ${
             t.type === 'income'
               ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
@@ -913,19 +1025,27 @@ function TxRow({
       </td>
       <td className="tabular px-2 py-2 text-right whitespace-nowrap">{yen(t.amount)}</td>
       <td className="px-2 py-2">
-        <FundSelect t={t} />
+        <FundSelect t={t} disabled={locked} />
+        <SubAccountSelect
+          fund={t.fund}
+          value={t.fundAccount}
+          aria-label={`${t.description} の口座・カード`}
+          disabled={locked}
+          onChange={(id) => store.updateTransaction(t.id, { fundAccount: id })}
+        />
       </td>
       <td className="px-2 py-2">
         <AccountSelect
           type={t.type}
           value={t.account}
           aria-label={`${t.description} の勘定科目`}
+          disabled={locked}
           onChange={(v) => store.updateTransaction(t.id, { account: v, approved: false })}
         />
         <DepreciationHint account={t.account} amount={t.amount} type={t.type} />
-        <CounterFundControl t={t} />
-        <InterestControl key={`${t.id}:${t.interest ?? 0}`} t={t} />
-        <TaxControls t={t} />
+        <CounterFundControl t={t} disabled={locked} />
+        <InterestControl key={`${t.id}:${t.interest ?? 0}`} t={t} disabled={locked} />
+        <TaxControls t={t} disabled={locked} />
       </td>
       <td className="tabular px-2 py-2 text-right whitespace-nowrap">
         {t.type === 'expense' && !isExcluded(t.account) && !isSettlement(t.account) ? (
@@ -992,11 +1112,12 @@ function TxRow({
           <button
             type="button"
             className={btn.danger}
+            disabled={locked}
+            title={locked ? '申告済み(ロック中)の年の取引は削除できません' : undefined}
             onClick={() => {
               if (confirm(`「${t.description}」(${yen(t.amount)})を削除しますか?`)) {
-                store.deleteTransaction(t.id);
-                // 削除直後に「元に戻す」を出す(誤削除からの復旧用)
-                onDeleted(t);
+                // 削除直後に「元に戻す」を出す(誤削除からの復旧用)。削除できなかったときは出さない
+                if (store.deleteTransaction(t.id)) onDeleted(t);
               }
             }}
           >
@@ -1183,7 +1304,7 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
     if (!date || !Number.isFinite(n) || n <= 0) return;
     // 科目未選択ならルールで自動仕訳を試みる
     const finalAccount = account ?? suggestAccount(description, type, store.rules);
-    store.addTransactions([
+    const added = store.addTransactions([
       {
         date,
         amount: Math.round(n),
@@ -1195,6 +1316,8 @@ function ManualForm({ onDone }: { onDone: (msg: string) => void }) {
         fund,
       },
     ]);
+    // ロック中の年の日付で追加できなかったときは、上部のお知らせで理由を示す
+    if (added === 0) return;
     onDone(
       `取引を追加しました(勘定科目: ${accountLabel(finalAccount)})。一覧で確認して承認してください。`,
     );

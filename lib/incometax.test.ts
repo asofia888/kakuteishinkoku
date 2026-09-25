@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { basicDeduction, incomeTaxBase, simulateIncomeTax } from './incometax';
+import { basicDeduction, incomeTaxBase, simulateIncomeTax, suggestedLossCarryforward } from './incometax';
 import { DeductionEntry, emptyDeduction } from './types';
 
 function ded(over: Partial<DeductionEntry>): DeductionEntry {
@@ -154,5 +154,51 @@ describe('simulateIncomeTax', () => {
     // 改正のない2024年分は差が5万円(48万−43万)だけ
     const r2024 = simulateIncomeTax(5_000_000, ded({ year: 2024, socialInsurance: 800_000 }));
     expect(r2024.residentTaxEst).toBe((r2024.taxable + 50_000) * 0.1 + 5_000);
+  });
+});
+
+describe('予定納税・純損失の繰越控除', () => {
+  it('予定納税額は申告納税額(源泉差引後・100円未満切捨て)から引き、第3期分にする', () => {
+    // 税額 156,723 − 源泉 0 → 申告納税額 156,700 − 予定納税 100,000 = 56,700
+    const r = simulateIncomeTax(5_000_000, ded({ socialInsurance: 800_000, prepaidTax: 100_000 }));
+    expect(r.filingTax).toBe(156_700);
+    expect(r.balanceDue).toBe(56_700);
+    // 予定納税が多すぎれば還付
+    expect(simulateIncomeTax(5_000_000, ded({ socialInsurance: 800_000, prepaidTax: 200_000 })).balanceDue).toBe(-43_300);
+  });
+
+  it('繰越損失は合計所得金額から引く。基礎控除は繰越前の合計所得金額、医療費の足切りは控除後で判定する', () => {
+    // 事業所得 500万 − 青色65万 = 合計所得435万 → 繰越損失300万 → 総所得金額等135万
+    const r = simulateIncomeTax(
+      5_000_000,
+      ded({ lossCarryforward: 3_000_000, medicalPaid: 150_000 }),
+    );
+    expect(r.totalIncome).toBe(4_350_000);
+    expect(r.lossApplied).toBe(3_000_000);
+    expect(r.incomeAfterLoss).toBe(1_350_000);
+    expect(r.basic).toBe(1_040_000); // 合計所得435万(489万以下)で判定
+    expect(r.medicalDeduction).toBe(150_000 - 67_500); // 足切りは総所得金額等135万の5%
+    expect(r.taxable).toBe(Math.floor((1_350_000 - 1_040_000 - 82_500) / 1000) * 1000);
+    expect(r.lossToCarry).toBe(0);
+  });
+
+  it('所得を超える繰越損失は使い切れず、赤字の年はその赤字も翌年へ繰り越せる', () => {
+    const r = simulateIncomeTax(1_000_000, ded({ lossCarryforward: 800_000 }));
+    // 合計所得 100万 − 65万 = 35万 → 繰越35万を使い、残り45万を翌年へ
+    expect(r.lossApplied).toBe(350_000);
+    expect(r.lossToCarry).toBe(450_000);
+    const loss = simulateIncomeTax(-600_000, ded({ lossCarryforward: 100_000 }));
+    expect(loss.lossToCarry).toBe(700_000);
+    expect(loss.totalTax).toBe(0);
+  });
+
+  it('帳簿からの繰越額の目安: 古い損失から使い、3年を過ぎた残りは消える', () => {
+    const y = (year: number, profit: number) => ({ year, profit, blueDeduction: 650_000 });
+    // 2022年 −300万、2023年 黒字(青色後100万)、2024・2025年 −50万・0
+    const years = [y(2022, -3_000_000), y(2023, 1_650_000), y(2024, -500_000), y(2025, 650_000)];
+    // 2026年: 2022年分は 300万−100万 = 200万 が残るが、2022+3 = 2025年までで期限切れ → 2024年の50万だけ
+    expect(suggestedLossCarryforward(years, 2025)).toBe(2_500_000);
+    expect(suggestedLossCarryforward(years, 2026)).toBe(500_000);
+    expect(suggestedLossCarryforward([y(2026, -100_000)], 2026)).toBe(0); // その年の赤字は含めない
   });
 });

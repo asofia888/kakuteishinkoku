@@ -1,7 +1,11 @@
 import { isExcluded, isSettlement } from './accounts';
 import { transactionsOfYear } from './aggregate';
 import { isDeferred } from './assets';
-import { INVOICE_TRANSITION_AFTER, INVOICE_TRANSITION_STEPS, SPECIAL20 } from './taxparams';
+import {
+  INVOICE_TRANSITION_AFTER,
+  INVOICE_TRANSITION_STEPS,
+  smallBusinessSpecialRate,
+} from './taxparams';
 import { FixedAsset, TaxCategory, TaxSettings, Transaction } from './types';
 
 /**
@@ -33,15 +37,17 @@ const EXPENSE_DEFAULTS: Record<string, TaxCategory> = {
 
 /** 固定資産の取得(振替科目)。損益には出ないが、消費税では取得した年の課税仕入になる */
 const ASSET_PURCHASE = 'asset_purchase';
+/** 固定資産の売却代金(振替科目)。所得税では譲渡所得だが、消費税では課税売上になる */
+const ASSET_SALE = 'asset_sale';
 
 /**
  * 消費税の集計対象になる科目か。未仕訳・対象外・振替(カード引落し等)は対象外だが、
- * 「固定資産の取得」は購入時に取得価額の全額が課税仕入になる
+ * 固定資産の取得は購入時に取得価額の全額が課税仕入に、固定資産の売却代金は課税売上になる
  * (減価償却費は課税仕入ではないため、購入時に控除しないと控除漏れになる)。
  */
 export function isTaxRelevant(account: string | null): boolean {
   if (account === null || isExcluded(account)) return false;
-  return !isSettlement(account) || account === ASSET_PURCHASE;
+  return !isSettlement(account) || account === ASSET_PURCHASE || account === ASSET_SALE;
 }
 
 export function defaultTaxCategory(t: Pick<Transaction, 'type' | 'account'>): TaxCategory {
@@ -165,10 +171,11 @@ export interface TaxSummary {
   /** 納付見込額(マイナスは還付見込) */
   payGeneral: number;
   paySimplified: number;
-  paySpecial20: number;
-  /** 2割特例をこの年分に適用できるか(個人事業者は2023〜2026年分のみ) */
-  special20Available: boolean;
-  /** 設定された方式での納付見込額(2割特例が期限切れの年分は本則課税で計算) */
+  /** 2割特例・3割特例の納付見込額(その年分に特例がなければ 0) */
+  paySpecial: number;
+  /** その年分の特例の納付割合(2026年分まで20%・個人の2027〜2028年分は30%。なし = null) */
+  specialRate: 20 | 30 | null;
+  /** 設定された方式での納付見込額(特例のない年分を特例で設定していれば本則課税で計算) */
   paySelected: number;
 }
 
@@ -234,16 +241,16 @@ export function summarizeTax(
   const payGeneral = salesTax - deductibleTax;
   const paySimplified =
     salesTax - Math.floor((salesTax * DEEMED_PURCHASE_RATES[settings.simplifiedType]) / 100);
-  const paySpecial20 = Math.floor((salesTax * 20) / 100);
-  const special20Available = year >= SPECIAL20.firstYear && year <= SPECIAL20.lastYear;
+  const specialRate = smallBusinessSpecialRate(year);
+  const paySpecial = specialRate !== null ? Math.floor((salesTax * specialRate) / 100) : 0;
   const paySelected =
     settings.method === 'general'
       ? payGeneral
       : settings.method === 'simplified'
         ? paySimplified
-        : // 2割特例は期限のある措置。期限外の年分は本則課税(誤った少額表示を防ぐ)
-          special20Available
-          ? paySpecial20
+        : // 2割・3割特例は期限のある措置。期限外の年分は本則課税(誤った少額表示を防ぐ)
+          specialRate !== null
+          ? paySpecial
           : payGeneral;
 
   return {
@@ -261,8 +268,8 @@ export function summarizeTax(
     nonQualifiedLostTax,
     payGeneral,
     paySimplified,
-    paySpecial20,
-    special20Available,
+    paySpecial,
+    specialRate,
     paySelected,
   };
 }
@@ -279,7 +286,7 @@ export function summarizeTax(
  */
 export interface TaxReturnCalc {
   year: number;
-  /** 実際に適用した方式(2割特例の期限外は本則に読み替え) */
+  /** 実際に適用した方式(2割・3割特例の期限外は本則に読み替え) */
   applied: 'general' | 'simplified' | 'special20';
   /** 課税標準額(千円未満切捨・税率区分ごと) */
   base10: number;
@@ -289,7 +296,7 @@ export interface TaxReturnCalc {
   tax10: number;
   tax8: number;
   salesTaxNational: number;
-  /** 控除対象仕入税額(国税)。簡易=みなし仕入率、2割特例=特別控除80% */
+  /** 控除対象仕入税額(国税)。簡易=みなし仕入率、2割特例=特別控除80%・3割特例=70% */
   deductibleNational: number;
   /** 差引税額(百円未満切捨)。マイナス = 控除不足還付税額(円単位) */
   netNational: number;
@@ -349,16 +356,17 @@ export function calcTaxReturn(
     generalDeductible += Math.floor((full * ratio) / 100);
   }
 
-  const special20Available = year >= SPECIAL20.firstYear && year <= SPECIAL20.lastYear;
+  const specialRate = smallBusinessSpecialRate(year);
   const applied: TaxReturnCalc['applied'] =
-    settings.method === 'special20' && !special20Available ? 'general' : settings.method;
+    settings.method === 'special20' && specialRate === null ? 'general' : settings.method;
 
   const deductibleNational =
     applied === 'general'
       ? generalDeductible
       : applied === 'simplified'
         ? Math.floor((salesTaxNational * DEEMED_PURCHASE_RATES[settings.simplifiedType]) / 100)
-        : Math.floor((salesTaxNational * 80) / 100); // 2割特例(特別控除80%)
+        : // 2割特例は特別控除80%・3割特例は70%(納付は売上の消費税の2割・3割)
+          Math.floor((salesTaxNational * (100 - (specialRate ?? 20))) / 100);
 
   const rawNet = salesTaxNational - deductibleNational;
   // 納付は百円未満切捨。控除不足(還付)は円単位のまま返す
