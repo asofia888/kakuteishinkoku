@@ -9,9 +9,15 @@ import { expect, Page, test } from '@playwright/test';
  *   sudo npx playwright install-deps chromium
  */
 
-/** サイドバーのナビゲーションから遷移する(本文中の同名リンクと区別するため) */
+/**
+ * サイドバーのナビゲーションから遷移する(本文中の同名リンクと区別するため)。
+ * 遷移先のリンクが選択中(青)になるまで待つ。待たずに次の操作をすると、読み込み中の
+ * 前のページの要素(ダッシュボードの非表示のファイル入力など)を操作してしまうことがある
+ */
 async function nav(page: Page, label: RegExp) {
-  await page.locator('aside').getByRole('link', { name: label }).click();
+  const link = page.locator('aside').getByRole('link', { name: label });
+  await link.click();
+  await expect(link).toHaveClass(/bg-blue-600/);
 }
 
 test.beforeEach(async ({ page }) => {

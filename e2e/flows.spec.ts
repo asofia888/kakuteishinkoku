@@ -7,9 +7,15 @@ import { expect, Page, test } from '@playwright/test';
  * 本番ビルド(basePath 付き含む)に対して実行する。
  */
 
-/** サイドバーのナビゲーションから遷移する(本文中の同名リンクと区別するため) */
+/**
+ * サイドバーのナビゲーションから遷移する(本文中の同名リンクと区別するため)。
+ * 遷移先のリンクが選択中(青)になるまで待つ。待たずに次の操作をすると、読み込み中の
+ * 前のページの要素(ダッシュボードの非表示のファイル入力など)を操作してしまうことがある
+ */
 async function nav(page: Page, label: RegExp) {
-  await page.locator('aside').getByRole('link', { name: label }).click();
+  const link = page.locator('aside').getByRole('link', { name: label });
+  await link.click();
+  await expect(link).toHaveClass(/bg-blue-600/);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -26,9 +32,10 @@ test('CSV明細を取り込める(プレビュー → 取込 → 一覧に反映
     '2026/05/10,-3300,AMAZONテスト購入',
     '2026/05/15,220000,振込 テストクライアント',
   ].join('\r\n');
+  // 取引一覧のCSV入力を ID で指定する。汎用の input[type="file"] だと、ページ遷移の読み込み中に
+  // ダッシュボードのバックアップ復元用の入力(非表示)を拾い、CSVが復元に渡って失敗することがある
   await page
-    .locator('input[type="file"]')
-    .first()
+    .locator('#tx-csv-file')
     .setInputFiles({ name: 'bank.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf-8') });
 
   // プレビューに2件が並び、取込を確定すると一覧に反映される(括弧の全角/半角には依存しない)

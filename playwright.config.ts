@@ -12,6 +12,9 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
+  // 画面の表示待ち。帳簿・取引一覧はサンプルデータで数百の要素を描くため、並列実行や
+  // 遅いCIでは既定の5秒を超えることがある(実際の不具合ではなく待ち時間切れで落ちる)
+  expect: { timeout: 10_000 },
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
