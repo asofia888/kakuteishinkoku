@@ -187,8 +187,9 @@ export const DEPRECIATION_MIN = SMALL_ASSET.depreciationMin;
 
 /**
  * 10万円以上なのに「消耗品費」に仕訳された取引(減価償却の検討が必要な候補)。
- * 原則は減価償却資産として耐用年数で分割計上。青色申告なら取得価額30万円未満は
- * 少額減価償却資産の特例(年合計300万円まで)で購入年に一括計上できる。
+ * 原則は減価償却資産として耐用年数で分割計上。青色申告なら取得価額30万円未満
+ * (2026/4/1以後の取得は40万円未満)は少額減価償却資産の特例(年合計300万円まで)で
+ * 購入年に一括計上できる。
  */
 export function depreciationCandidates(transactions: Transaction[]): Transaction[] {
   return transactions.filter(

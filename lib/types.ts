@@ -197,7 +197,7 @@ export const DEFAULT_ISSUER: IssuerProfile = {
  * 減価償却の方法。
  * - straight: 定額法(個人の法定償却方法。平成19年4月以後取得の資産)
  * - lump3: 一括償却資産(取得価額10万〜20万円未満。3年均等・月割りなし)
- * - immediate: 少額減価償却資産の特例(青色申告・30万円未満・年合計300万円まで。全額その年の経費)
+ * - immediate: 少額減価償却資産の特例(青色申告・30万円未満〔2026/4/1以後の取得は40万円未満〕・年合計300万円まで。全額その年の経費)
  * - deferred: 繰延資産(開業費・開発費など)。任意償却で、年ごとの償却額を自由に決められる
  */
 export type DepreciationMethod = 'straight' | 'declining' | 'lump3' | 'immediate' | 'deferred';

@@ -1,5 +1,5 @@
 import { escapeFormulaCell } from './csv';
-import { declining200For } from './taxparams';
+import { declining200For, immediateMaxFor, SMALL_ASSET_IMMEDIATE } from './taxparams';
 import { FixedAsset } from './types';
 
 /**
@@ -247,6 +247,32 @@ export const METHOD_LABELS: Record<FixedAsset['method'], string> = {
   immediate: '少額特例(全額)',
   deferred: '任意償却(開業費等)',
 };
+
+/** YYYY-MM-DD → 「2029年3月31日」 */
+function jpDate(date: string): string {
+  const [y, m, d] = date.split('-').map(Number);
+  return `${y}年${m}月${d}日`;
+}
+
+/**
+ * 少額減価償却資産の特例(immediate)を選んだ資産が要件から外れていないか。
+ * 取得価額の上限(2026/3/31までの取得は30万円未満・2026/4/1以後は40万円未満)と
+ * 適用期限(2029/3/31までの取得)を取得日で判定し、外れていれば理由を返す。
+ * 年合計300万円の上限は年単位の判定のため、台帳ページ側で別に警告する。
+ */
+export function immediateProblem(
+  asset: Pick<FixedAsset, 'method' | 'cost' | 'acquiredDate'>,
+): string | null {
+  if (asset.method !== 'immediate' || !/^\d{4}-\d{2}-\d{2}$/.test(asset.acquiredDate)) return null;
+  const max = immediateMaxFor(asset.acquiredDate);
+  if (max === null) {
+    return `少額特例は${jpDate(SMALL_ASSET_IMMEDIATE.until)}までに取得した資産が対象です(期限の延長があったかご確認ください)`;
+  }
+  if (asset.cost >= max) {
+    return `少額特例は取得価額${max / 10_000}万円未満の資産が対象です(${jpDate(asset.acquiredDate)}取得の上限)。定額法などに変更してください`;
+  }
+  return null;
+}
 
 /** 繰延資産(開業費など。任意償却・B/Sでは「繰延資産」区分)か */
 export function isDeferred(asset: Pick<FixedAsset, 'method'>): boolean {

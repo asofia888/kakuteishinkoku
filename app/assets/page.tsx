@@ -9,6 +9,7 @@ import {
   depreciationForYear,
   depreciationSchedule,
   depreciationTableCsv,
+  immediateProblem,
   isDeferred,
   METHOD_LABELS,
   straightLineRate,
@@ -16,7 +17,7 @@ import {
   yearDepreciationTotals,
 } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
-import { declining200For, SMALL_ASSET } from '@/lib/taxparams';
+import { declining200For, immediateMaxFor, SMALL_ASSET } from '@/lib/taxparams';
 import { dateLabel, today, yen } from '@/lib/format';
 import { useStore } from '@/lib/store';
 import { DepreciationMethod, FixedAsset } from '@/lib/types';
@@ -81,6 +82,16 @@ export default function AssetsPage() {
     [store.assets, year],
   );
 
+  // 少額特例の取得価額上限(取得日で30万/40万円未満)・適用期限から外れた資産
+  const immediateProblems = useMemo(
+    () =>
+      store.assets.flatMap((a) => {
+        const problem = immediateProblem(a);
+        return problem ? [{ name: a.name, problem }] : [];
+      }),
+    [store.assets],
+  );
+
   // 償却資産税(固定資産税)の申告対象になりうる資産の取得価額合計(目安)。
   // 定額法・少額特例は対象、一括償却資産(3年均等)と繰延資産は対象外
   const shokyakuShisanCost = useMemo(
@@ -129,6 +140,19 @@ export default function AssetsPage() {
             {year}年の<strong>少額減価償却資産の特例(全額計上)の合計が {yen(immediateTotal)}</strong>{' '}
             になり、上限の<strong>年300万円を超えています</strong>。超過分の資産には特例を適用できません。
             300万円に収まるよう資産を選び、超過分は「定額法」(取得価額20万円未満なら「一括償却」も可)に変更してください。
+          </Alert>
+        )}
+
+        {immediateProblems.length > 0 && (
+          <Alert tone="warning">
+            少額特例(全額計上)の要件から外れている資産があります:
+            <ul className="mt-1 list-disc pl-5">
+              {immediateProblems.map((p, i) => (
+                <li key={i}>
+                  <strong>{p.name}</strong> — {p.problem}
+                </li>
+              ))}
+            </ul>
           </Alert>
         )}
 
@@ -351,7 +375,7 @@ export default function AssetsPage() {
             (売却損益・除却損は自動計上しません。廃棄なら除却損を必要経費にできる場合があり、売却は譲渡所得になるため、税理士等にご確認ください。
             一括償却資産は除却しても3年均等償却を続けます)。
             <br />
-            ※<strong className="text-slate-500">少額特例は年合計300万円まで</strong>。また、定額法・少額特例の資産は
+            ※<strong className="text-slate-500">少額特例は取得価額30万円未満(2026年4月1日以後の取得は40万円未満)・年合計300万円まで</strong>。また、定額法・少額特例の資産は
             <strong className="text-slate-500">償却資産税(固定資産税)の申告対象</strong>
             です(毎年1月末・市区町村へ。課税標準150万円未満は課税されません)。一括償却資産(3年均等)は対象外のため、
             10〜20万円の資産は一括償却を選ぶと償却資産税がかかりません。
@@ -379,15 +403,20 @@ function AssetForm({
   const set = (patch: Partial<AssetDraft>) => onChange({ ...draft, ...patch });
   const cost = draft.cost;
 
+  // 少額特例の上限は取得日で変わる(2026/4/1以後の取得は40万円未満。期限後は特例なし)
+  const immediateMax = immediateMaxFor(draft.acquiredDate || today());
+  const maxLabel = immediateMax !== null ? `${immediateMax / 10_000}万円` : null;
+  const immediateNote = '青色申告なら少額特例(全額・年合計300万円まで)';
   // 取得価額に応じて選べる償却方法のヒント
   const hint =
     cost > 0 && cost < DEPRECIATION_MIN
       ? '10万円未満は台帳への登録は不要です(消耗品費などでそのまま経費にできます)。'
-      : cost < 200000
-        ? '10万〜20万円未満: 一括償却(3年均等・償却資産税の対象外)か、青色申告なら少額特例(全額・年合計300万円まで)を選べます。'
-        : cost < 300000
-          ? '20万〜30万円未満: 定額法か、青色申告なら少額特例(全額・年合計300万円まで)を選べます。'
-          : '30万円以上: 定額法で耐用年数にわたって償却します。';
+      : cost < SMALL_ASSET.lumpMax
+        ? `10万〜20万円未満: 一括償却(3年均等・償却資産税の対象外)${immediateMax !== null ? `か、${immediateNote}` : ''}を選べます。`
+        : immediateMax !== null && cost < immediateMax
+          ? `20万〜${maxLabel}未満: 定額法か、${immediateNote}を選べます(少額特例の上限は取得日で判定: 2026年3月31日までの取得は30万円未満、4月1日以後は40万円未満)。`
+          : `${maxLabel ?? '20万円'}以上: 定額法で耐用年数にわたって償却します。`;
+  const draftImmediateProblem = immediateProblem(draft);
 
   return (
     <Card title={draft.id ? `「${draft.name}」を編集` : '固定資産を登録'}>
@@ -435,9 +464,14 @@ function AssetForm({
             <option value="straight">定額法(原則)</option>
             <option value="declining">定率法(200%・要届出)</option>
             <option value="lump3">一括償却(3年均等・10〜20万円未満)</option>
-            <option value="immediate">少額特例(全額その年の経費・30万円未満)</option>
+            <option value="immediate">
+              {maxLabel ? `少額特例(全額その年の経費・${maxLabel}未満)` : '少額特例(適用期限後の取得は対象外)'}
+            </option>
             <option value="deferred">開業費・繰延資産(任意償却)</option>
           </select>
+          {draftImmediateProblem && (
+            <p className="mt-1 text-[11px] leading-relaxed font-medium text-rose-700">⚠ {draftImmediateProblem}</p>
+          )}
           {draft.method === 'declining' && (
             <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
               個人は定額法が法定のため、定率法は税務署へ「減価償却資産の償却方法の届出書」の提出が必要です。

@@ -18,7 +18,7 @@ const METHODS: { id: TaxSettings['method']; label: string; hint: string }[] = [
   {
     id: 'general',
     label: '本則課税(一般課税)',
-    hint: '売上の消費税 − 仕入の消費税(適格請求書が必要。適格なし分は経過措置で80%/50%のみ控除)',
+    hint: '売上の消費税 − 仕入の消費税(適格請求書が必要。適格なし分は経過措置で一部のみ控除: 2026/9まで80%・2028/9まで70%・2030/9まで50%・2031/9まで30%)',
   },
   {
     id: 'simplified',
@@ -42,14 +42,15 @@ export default function TaxPage() {
   );
 
   const settings = store.taxSettings;
+  // 固定資産の取得は台帳の事業専用割合を反映して課税仕入にするため、台帳も渡す
   const summary = useMemo(
-    () => summarizeTax(store.transactions, year, settings),
-    [store.transactions, year, settings],
+    () => summarizeTax(store.transactions, year, settings, store.assets),
+    [store.transactions, year, settings, store.assets],
   );
   // 申告書様式(割戻し計算・国税/地方分離・法定の端数処理)での計算
   const taxReturn = useMemo(
-    () => calcTaxReturn(store.transactions, year, settings),
-    [store.transactions, year, settings],
+    () => calcTaxReturn(store.transactions, year, settings, store.assets),
+    [store.transactions, year, settings, store.assets],
   );
 
   const taxableSales = summary.sales10 + summary.sales8;
@@ -156,6 +157,7 @@ export default function TaxPage() {
             <strong>2割特例は{year}年分には適用できません</strong>
             (個人事業者は2026年分の申告が最後です)。この年分の納付見込みは
             <strong>本則課税</strong>で表示しています。簡易課税を使う場合は事前の届出が必要です。
+            なお2027・2028年分は個人事業者向けの<strong>3割特例</strong>(令和8年度改正)がありますが、本アプリでは未対応です。
           </Alert>
         )}
 
@@ -169,7 +171,11 @@ export default function TaxPage() {
           <StatCard
             label="課税仕入(税込・事業分)"
             value={yen(summary.purchase10 + summary.purchase8)}
-            sub="家事按分後の経費計上分のみ"
+            sub={
+              summary.purchaseAssets > 0
+                ? `家事按分後の事業分(うち固定資産の取得 ${yen(summary.purchaseAssets)})`
+                : '家事按分後の経費計上分のみ'
+            }
           />
           <StatCard
             label={`納付見込み(${
@@ -255,7 +261,7 @@ export default function TaxPage() {
             <div className="mt-4">
               <Alert tone="warning">
                 適格請求書<strong>なし</strong>の課税仕入が{summary.nonQualifiedCount}
-                件あります。経過措置(2026年9月まで80%・2029年9月まで50%)適用後、
+                件あります。経過措置(2026年9月まで80%・2028年9月まで70%・2030年9月まで50%・2031年9月まで30%)適用後、
                 <strong>{yen(summary.nonQualifiedLostTax)}</strong> が控除できません。
               </Alert>
             </div>
@@ -269,6 +275,11 @@ export default function TaxPage() {
             </li>
             <li>
               <strong>2割特例</strong>は、インボイス登録がなければ免税事業者だった小規模事業者(基準期間の課税売上高1,000万円以下など)が対象です(2026年9月30日を含む課税期間まで)。
+            </li>
+            <li>
+              10万円以上の備品・車両など<strong>「固定資産の取得(振替)」</strong>の取引は、減価償却ではなく
+              <strong>購入した年に課税仕入</strong>になります(本則課税)。家事と共用する資産は固定資産台帳の事業専用割合だけを控除します。
+              中古品を個人から買った場合など消費税がかからない購入は、取引一覧で税区分を「不課税」に変更してください。
             </li>
             <li>
               軽減税率(8%)の売上・仕入がある場合は、取引一覧の税区分で「課税
@@ -318,7 +329,7 @@ export default function TaxPage() {
                 <td className="tabular px-2 py-1.5 text-right">{yen(taxReturn.deductibleNational)}</td>
                 <td className="py-1.5 pl-2 text-xs text-slate-500">
                   {taxReturn.applied === 'general'
-                    ? '適格分は全額・適格なしは経過措置80%/50%'
+                    ? '適格分は全額・適格なしは経過措置の割合(80%/70%/50%/30%)'
                     : taxReturn.applied === 'simplified'
                       ? `売上の消費税 × みなし仕入率${DEEMED_PURCHASE_RATES[settings.simplifiedType]}%`
                       : '特別控除(売上の消費税 × 80%)'}

@@ -109,7 +109,7 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
   const rawBalance = totalTax - d.withholding;
   const balanceDue = rawBalance > 0 ? Math.floor(rawBalance / 100) * 100 : rawBalance;
 
-  // 住民税: 基礎控除は所得税(2025年分〜58万+時限上乗せ)と異なり43万円のままのため、
+  // 住民税: 基礎控除は所得税(2025年分〜引き上げ・特例加算あり)と異なり43万円のままのため、
   // 基礎控除だけ住民税の額に置き換えた課税標準で概算する(扶養控除等のその他の差は未反映)
   const residentBasic = RESIDENT_BASIC_DEDUCTION.find((s) => totalIncome <= s.limit)!.amount;
   const residentTaxable =

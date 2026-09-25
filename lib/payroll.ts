@@ -1,6 +1,6 @@
 import { escapeFormulaCell } from './csv';
 import { basicDeduction, incomeTaxBase } from './incometax';
-import { salaryWithholdingFor } from './taxparams';
+import { salaryDeductionMinimumFor, salaryWithholdingFor } from './taxparams';
 import { PayrollEntry, Transaction, YearEndAdjustment } from './types';
 
 /**
@@ -93,13 +93,13 @@ export function buildPayrollTransactions(
 
 /**
  * 給与所得控除後の給与等の金額(速算式による概算)。
- * 令和7年分(2025年)以降は最低保障が65万円(令和7年度改正)。
- * 実際の年末調整では収入660万円未満は所得税法別表第五(4,000円刻みの表)を
- * 使うため、数百円ずれることがある。
+ * 最低保障額は年分で変わる(2025年分65万円・2026/2027年分74万円・2028年分以後69万円。
+ * lib/taxparams.ts)。実際の年末調整では収入660万円未満は所得税法別表第五
+ * (4,000円刻みの表)を使うため、数百円ずれることがある。
  */
 export function salaryIncomeAfterDeduction(gross: number, year: number): number {
   if (gross <= 0) return 0;
-  const floor = year >= 2025 ? 650_000 : 550_000;
+  const floor = salaryDeductionMinimumFor(year);
   let deduction: number;
   if (gross <= 1_800_000) deduction = Math.floor(gross * 0.4) - 100_000;
   else if (gross <= 3_600_000) deduction = Math.floor(gross * 0.3) + 80_000;

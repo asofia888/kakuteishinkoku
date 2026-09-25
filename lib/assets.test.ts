@@ -5,9 +5,11 @@ import {
   depreciationForYear,
   depreciationSchedule,
   disposalResidual,
+  immediateProblem,
   straightLineRate,
   yearDepreciationTotals,
 } from './assets';
+import { immediateMaxFor } from './taxparams';
 import { FixedAsset } from './types';
 
 let seq = 0;
@@ -283,5 +285,25 @@ describe('定率法(200%定率法・平成24年4月以後取得)', () => {
     expect(disposalResidual(a, 2022)).toBe(576_000);
     expect(bookValueAtEnd(a, 2022)).toBe(0);
     expect(bookValueAtStart(a, 2023)).toBe(0);
+  });
+});
+
+describe('少額減価償却資産の特例: 取得日による上限(令和8年度改正)', () => {
+  it('2026/3/31までの取得は30万円未満、4/1以後は40万円未満、2029/3/31後の取得は特例なし', () => {
+    expect(immediateMaxFor('2026-03-31')).toBe(300_000);
+    expect(immediateMaxFor('2026-04-01')).toBe(400_000);
+    expect(immediateMaxFor('2029-03-31')).toBe(400_000);
+    expect(immediateMaxFor('2029-04-01')).toBeNull();
+  });
+
+  it('上限以上・期限後の少額特例を警告し、上限未満や他の償却方法は警告しない', () => {
+    // 35万円: 2026/4/1以後の取得なら対象、3/31までの取得なら対象外
+    expect(immediateProblem({ method: 'immediate', cost: 350_000, acquiredDate: '2026-04-01' })).toBeNull();
+    expect(immediateProblem({ method: 'immediate', cost: 350_000, acquiredDate: '2026-03-31' })).toContain('30万円未満');
+    // ちょうど40万円は「未満」を満たさない
+    expect(immediateProblem({ method: 'immediate', cost: 400_000, acquiredDate: '2026-06-01' })).toContain('40万円未満');
+    expect(immediateProblem({ method: 'immediate', cost: 200_000, acquiredDate: '2029-04-01' })).toContain('2029年3月31日');
+    expect(immediateProblem({ method: 'straight', cost: 500_000, acquiredDate: '2026-06-01' })).toBeNull();
+    expect(immediateProblem({ method: 'immediate', cost: 350_000, acquiredDate: '' })).toBeNull();
   });
 });

@@ -19,7 +19,7 @@ describe('incomeTaxBase: 速算表', () => {
   });
 });
 
-describe('basicDeduction: 基礎控除(令和7年度改正対応)', () => {
+describe('basicDeduction: 基礎控除(令和8年度改正対応)', () => {
   it('2024年分まで: 48万円(2,400万円超は逓減)', () => {
     expect(basicDeduction(5_000_000, 2024)).toBe(480_000);
     expect(basicDeduction(24_000_000, 2024)).toBe(480_000);
@@ -28,48 +28,66 @@ describe('basicDeduction: 基礎控除(令和7年度改正対応)', () => {
     expect(basicDeduction(26_000_000, 2024)).toBe(0);
   });
 
-  it('2025・2026年分: 58万円+時限上乗せ(132万以下95万/336万以下88万/489万以下68万/655万以下63万)', () => {
-    expect(basicDeduction(1_000_000, 2026)).toBe(950_000);
-    expect(basicDeduction(1_320_000, 2026)).toBe(950_000);
-    expect(basicDeduction(2_000_000, 2026)).toBe(880_000);
-    expect(basicDeduction(4_000_000, 2026)).toBe(680_000);
-    expect(basicDeduction(5_000_000, 2026)).toBe(630_000);
-    expect(basicDeduction(8_000_000, 2026)).toBe(580_000);
-    expect(basicDeduction(23_500_000, 2026)).toBe(580_000);
-    expect(basicDeduction(23_600_000, 2026)).toBe(480_000);
-    expect(basicDeduction(26_000_000, 2026)).toBe(0);
+  it('2025年分: 58万円+上乗せ(132万以下95万/336万以下88万/489万以下68万/655万以下63万)', () => {
+    expect(basicDeduction(1_000_000, 2025)).toBe(950_000);
+    expect(basicDeduction(1_320_000, 2025)).toBe(950_000);
+    expect(basicDeduction(2_000_000, 2025)).toBe(880_000);
+    expect(basicDeduction(4_000_000, 2025)).toBe(680_000);
+    expect(basicDeduction(5_000_000, 2025)).toBe(630_000);
+    expect(basicDeduction(8_000_000, 2025)).toBe(580_000);
+    expect(basicDeduction(23_500_000, 2025)).toBe(580_000);
+    expect(basicDeduction(23_600_000, 2025)).toBe(480_000);
+    expect(basicDeduction(26_000_000, 2025)).toBe(0);
   });
 
-  it('2027年分以降: 時限上乗せが終わり、132万円以下95万円と58万円だけになる', () => {
-    expect(basicDeduction(1_000_000, 2027)).toBe(950_000);
-    expect(basicDeduction(2_000_000, 2027)).toBe(580_000);
-    expect(basicDeduction(5_000_000, 2027)).toBe(580_000);
-    expect(basicDeduction(23_600_000, 2027)).toBe(480_000);
+  it('2026・2027年分: 本則62万円+特例(489万以下104万/655万以下67万)', () => {
+    for (const year of [2026, 2027]) {
+      expect(basicDeduction(1_000_000, year)).toBe(1_040_000);
+      expect(basicDeduction(4_890_000, year)).toBe(1_040_000);
+      expect(basicDeduction(4_890_001, year)).toBe(670_000);
+      expect(basicDeduction(6_550_000, year)).toBe(670_000);
+      expect(basicDeduction(6_550_001, year)).toBe(620_000);
+      expect(basicDeduction(23_500_000, year)).toBe(620_000);
+      expect(basicDeduction(23_600_000, year)).toBe(480_000);
+      expect(basicDeduction(24_100_000, year)).toBe(320_000);
+      expect(basicDeduction(24_600_000, year)).toBe(160_000);
+      expect(basicDeduction(26_000_000, year)).toBe(0);
+    }
+  });
+
+  it('2028年分以後: 本則62万円。合計所得132万円以下のみ99万円', () => {
+    expect(basicDeduction(1_320_000, 2028)).toBe(990_000);
+    expect(basicDeduction(1_320_001, 2028)).toBe(620_000);
+    expect(basicDeduction(5_000_000, 2028)).toBe(620_000);
+    expect(basicDeduction(23_600_000, 2028)).toBe(480_000);
+    expect(basicDeduction(26_000_000, 2028)).toBe(0);
   });
 });
 
 describe('simulateIncomeTax', () => {
   it('青色控除→所得控除→千円未満切捨て→速算表→復興税の順に計算する(2026年分)', () => {
     // 事業所得500万(控除前) − 青色65万 = 435万
-    // 控除: 社保80万 + 基礎68万(2026年・合計所得336万超489万以下) = 148万 → 課税所得 287万
+    // 控除: 社保80万 + 基礎104万(2026年・合計所得489万以下) = 184万 → 課税所得 251万
     const r = simulateIncomeTax(5_000_000, ded({ socialInsurance: 800_000 }));
     expect(r.blueApplied).toBe(650_000);
     expect(r.totalIncome).toBe(4_350_000);
-    expect(r.basic).toBe(680_000);
-    expect(r.totalDeductions).toBe(1_480_000);
-    expect(r.taxable).toBe(2_870_000);
-    expect(r.incomeTax).toBe(2_870_000 * 0.1 - 97_500); // 189,500
-    expect(r.reconstructionTax).toBe(Math.floor(189_500 * 0.021)); // 3,979
-    expect(r.totalTax).toBe(193_479);
+    expect(r.basic).toBe(1_040_000);
+    expect(r.totalDeductions).toBe(1_840_000);
+    expect(r.taxable).toBe(2_510_000);
+    expect(r.incomeTax).toBe(153_500); // 2,510,000×10% − 97,500
+    expect(r.reconstructionTax).toBe(3_223); // 153,500×2.1% = 3,223.5 → 切捨て
+    expect(r.totalTax).toBe(156_723);
     // 源泉0 → 納付は100円未満切捨て
-    expect(r.balanceDue).toBe(193_400);
+    expect(r.balanceDue).toBe(156_700);
   });
 
-  it('同じ所得でも年分で基礎控除が変わる(2024年48万 / 2027年58万)', () => {
-    const r2024 = simulateIncomeTax(5_000_000, ded({ year: 2024 }));
-    const r2027 = simulateIncomeTax(5_000_000, ded({ year: 2027 }));
-    expect(r2024.basic).toBe(480_000);
-    expect(r2027.basic).toBe(580_000);
+  it('同じ所得(合計所得435万円)でも年分で基礎控除が変わる', () => {
+    const basicOf = (year: number) => simulateIncomeTax(5_000_000, ded({ year })).basic;
+    expect(basicOf(2024)).toBe(480_000);
+    expect(basicOf(2025)).toBe(680_000);
+    expect(basicOf(2026)).toBe(1_040_000);
+    expect(basicOf(2027)).toBe(1_040_000);
+    expect(basicOf(2028)).toBe(620_000);
   });
 
   it('青色控除は所得を限度とし、赤字なら税額0', () => {
@@ -129,9 +147,9 @@ describe('simulateIncomeTax', () => {
 
   it('住民税の概算は基礎控除を43万円(住民税の額)に置き換えて計算する', () => {
     // 事業所得500万 − 青色65万 = 所得435万。社保80万。
-    // 所得税: 基礎68万(2026年) → 課税所得287万 / 住民税: 基礎43万 → 課税標準312万
+    // 所得税: 基礎104万(2026年) → 課税所得251万 / 住民税: 基礎43万 → 課税標準312万
     const r = simulateIncomeTax(5_000_000, ded({ socialInsurance: 800_000 }));
-    expect(r.taxable).toBe(2_870_000);
+    expect(r.taxable).toBe(2_510_000);
     expect(r.residentTaxEst).toBe(3_120_000 * 0.1 + 5_000);
     // 改正のない2024年分は差が5万円(48万−43万)だけ
     const r2024 = simulateIncomeTax(5_000_000, ded({ year: 2024, socialInsurance: 800_000 }));

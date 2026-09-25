@@ -131,10 +131,18 @@ describe('payrollLedgerCsv: 賃金台帳', () => {
 });
 
 describe('salaryIncomeAfterDeduction: 給与所得控除後の金額(速算式)', () => {
-  it('2025年分以降は最低保障65万円(令和7年度改正)', () => {
-    expect(salaryIncomeAfterDeduction(1_000_000, 2026)).toBe(350_000); // 100万 − 65万
+  it('最低保障額は年分で変わる(2024年55万/2025年65万/2026・2027年74万/2028年以後69万)', () => {
+    expect(salaryIncomeAfterDeduction(1_000_000, 2024)).toBe(450_000); // 100万 − 55万
+    expect(salaryIncomeAfterDeduction(1_000_000, 2025)).toBe(350_000); // 100万 − 65万
+    expect(salaryIncomeAfterDeduction(1_000_000, 2026)).toBe(260_000); // 100万 − 74万(本則69万+特例5万)
+    expect(salaryIncomeAfterDeduction(1_000_000, 2027)).toBe(260_000);
+    expect(salaryIncomeAfterDeduction(1_000_000, 2028)).toBe(310_000); // 100万 − 69万
     expect(salaryIncomeAfterDeduction(500_000, 2026)).toBe(0); // 控除が収入を上回る
-    expect(salaryIncomeAfterDeduction(1_000_000, 2024)).toBe(450_000); // 旧: 55万
+  });
+
+  it('2026年分は収入220万円まで最低保障74万円が速算式(30%+8万)を上回る', () => {
+    expect(salaryIncomeAfterDeduction(2_000_000, 2026)).toBe(1_260_000); // 速算式68万 < 74万
+    expect(salaryIncomeAfterDeduction(2_200_000, 2026)).toBe(1_460_000); // 速算式74万 = 最低保障
   });
 
   it('速算式の各段階(30%+8万 / 20%+44万 / 10%+110万 / 上限195万)', () => {
@@ -158,9 +166,9 @@ describe('calcYearEndAdjustment: 年末調整', () => {
   });
   const rows = Array.from({ length: 12 }, (_, i) => monthly(i + 1));
 
-  it('総支給300万・社保45万・源泉6万 → 年調年税額35,200円・還付24,800円', () => {
-    // 給与所得控除後 202万 → 基礎控除88万(2026年・時限上乗せ) → 課税69万
-    // 算出税額 34,500 → ×102.1% = 35,224.5 → 100円未満切捨 35,200
+  it('総支給300万・社保45万・源泉6万(2026年分) → 年調年税額27,000円・還付33,000円', () => {
+    // 給与所得控除後 202万 → 基礎控除104万(2026年・合計所得489万以下) → 課税53万
+    // 算出税額 26,500 → ×102.1% = 27,056.5 → 100円未満切捨 27,000
     const r = calcYearEndAdjustment(
       rows,
       { personalDeductions: 0, insuranceDeductions: 0, declaredSocialInsurance: 0 },
@@ -171,11 +179,25 @@ describe('calcYearEndAdjustment: 年末調整', () => {
     expect(r.withheldSocial).toBe(450_000);
     expect(r.withheldTax).toBe(60_000);
     expect(r.salaryIncome).toBe(2_020_000);
+    expect(r.basic).toBe(1_040_000);
+    expect(r.taxable).toBe(530_000);
+    expect(r.incomeTax).toBe(26_500);
+    expect(r.annualTax).toBe(27_000);
+    expect(r.balance).toBe(-33_000); // 従業員へ還付
+  });
+
+  it('同じ給与でも2025年分は令和7年度改正の基礎控除(88万円)で計算する', () => {
+    const rows2025 = rows.map((p) => ({ ...p, date: p.date.replace('2026-', '2025-') }));
+    const r = calcYearEndAdjustment(
+      rows2025,
+      { personalDeductions: 0, insuranceDeductions: 0, declaredSocialInsurance: 0 },
+      '佐藤',
+      2025,
+    );
+    // 給与所得控除後 202万 → 基礎控除88万 → 課税69万 → 34,500 × 102.1% = 35,224.5 → 35,200
     expect(r.basic).toBe(880_000);
     expect(r.taxable).toBe(690_000);
-    expect(r.incomeTax).toBe(34_500);
     expect(r.annualTax).toBe(35_200);
-    expect(r.balance).toBe(-24_800); // 従業員へ還付
   });
 
   it('扶養控除・保険料控除・申告社保を差し引き、他の従業員・他年の給与は混ざらない', () => {
@@ -191,9 +213,9 @@ describe('calcYearEndAdjustment: 年末調整', () => {
     );
     expect(r.gross).toBe(3_000_000);
     expect(r.socialTotal).toBe(550_000);
-    // 課税所得 = 202万 − (55万+4万+38万+88万) = 17万 → 税 8,500 → ×1.021 = 8,678.5 → 8,600
-    expect(r.taxable).toBe(170_000);
-    expect(r.annualTax).toBe(8_600);
+    // 課税所得 = 202万 − (55万+4万+38万+104万) = 1万 → 税 500 → ×1.021 = 510.5 → 500
+    expect(r.taxable).toBe(10_000);
+    expect(r.annualTax).toBe(500);
   });
 
   it('源泉徴収簿CSVに月別内訳と年末調整欄が入る', () => {
@@ -214,7 +236,7 @@ describe('calcYearEndAdjustment: 年末調整', () => {
     expect(csv).toContain('2026-01-25,250000,37500,212500,5000');
     expect(csv).toContain('年間合計,3000000,450000,2550000,60000');
     expect(csv).toContain('給与所得控除後の給与等の金額,2020000');
-    expect(csv).toContain('年調年税額(×102.1%・100円未満切捨),35200');
-    expect(csv).toContain('超過額(還付する額),24800');
+    expect(csv).toContain('年調年税額(×102.1%・100円未満切捨),27000');
+    expect(csv).toContain('超過額(還付する額),33000');
   });
 });

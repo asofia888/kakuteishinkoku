@@ -1,7 +1,8 @@
 import { isExcluded, isSettlement } from './accounts';
 import { transactionsOfYear } from './aggregate';
+import { isDeferred } from './assets';
 import { INVOICE_TRANSITION_AFTER, INVOICE_TRANSITION_STEPS, SPECIAL20 } from './taxparams';
-import { TaxCategory, TaxSettings, Transaction } from './types';
+import { FixedAsset, TaxCategory, TaxSettings, Transaction } from './types';
 
 /**
  * 消費税(インボイス制度)の集計。
@@ -30,8 +31,21 @@ const EXPENSE_DEFAULTS: Record<string, TaxCategory> = {
   depreciation: 'none', // 減価償却費(取得時に課税済みのため対象外)
 };
 
+/** 固定資産の取得(振替科目)。損益には出ないが、消費税では取得した年の課税仕入になる */
+const ASSET_PURCHASE = 'asset_purchase';
+
+/**
+ * 消費税の集計対象になる科目か。未仕訳・対象外・振替(カード引落し等)は対象外だが、
+ * 「固定資産の取得」は購入時に取得価額の全額が課税仕入になる
+ * (減価償却費は課税仕入ではないため、購入時に控除しないと控除漏れになる)。
+ */
+export function isTaxRelevant(account: string | null): boolean {
+  if (account === null || isExcluded(account)) return false;
+  return !isSettlement(account) || account === ASSET_PURCHASE;
+}
+
 export function defaultTaxCategory(t: Pick<Transaction, 'type' | 'account'>): TaxCategory {
-  if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) return 'none';
+  if (t.account === null || !isTaxRelevant(t.account)) return 'none';
   if (t.type === 'income') return 'taxable10';
   return EXPENSE_DEFAULTS[t.account] ?? 'taxable10';
 }
@@ -69,13 +83,62 @@ export const SIMPLIFIED_TYPES: { value: 1 | 2 | 3 | 4 | 5 | 6; label: string }[]
 
 /**
  * 適格請求書(インボイス)なしの課税仕入に対する控除割合(経過措置)。
- * 2023/10〜2026/9: 80% → 2026/10〜2029/9: 50% → 以降: 0%(表は lib/taxparams.ts)
+ * 2023/10〜2026/9: 80% → 2026/10〜2028/9: 70% → 2028/10〜2030/9: 50%
+ * → 2030/10〜2031/9: 30% → 以降: 0%(令和8年度改正後。表は lib/taxparams.ts)
  */
 export function nonQualifiedDeductionRate(date: string): number {
   for (const step of INVOICE_TRANSITION_STEPS) {
     if (date < step.before) return step.rate;
   }
   return INVOICE_TRANSITION_AFTER;
+}
+
+function businessRatioOf(a: FixedAsset): number {
+  return Math.min(100, Math.max(1, Math.round(a.businessRatio)));
+}
+
+/**
+ * 「固定資産の取得」取引ごとの課税仕入の対象額(税込・事業分)。
+ * 家事共用資産(車両など)の仕入税額控除は事業分だけなので、固定資産台帳の事業専用割合を掛ける。
+ * 取引と台帳は「同じ年に取得した同じ金額の資産」で1対1に対応づけ、対応がつかない取引
+ * (複数資産の一括払い等)には、その年の残りの取得資産の取得価額による加重平均割合を使う。
+ * 台帳に該当年の資産がなければ全額を事業分とする。
+ * 繰延資産(開業費)は計上仕訳が自動起票され取得取引を使わないため対象外。
+ */
+export function assetPurchaseBusinessAmounts(
+  transactions: Transaction[],
+  assets: FixedAsset[],
+  year: number,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  const pool = assets.filter((a) => !isDeferred(a) && a.acquiredDate.startsWith(`${year}-`));
+  const matched = new Set<string>();
+  const unmatched: Transaction[] = [];
+  const purchases = transactionsOfYear(transactions, year)
+    .filter((t) => t.account === ASSET_PURCHASE && t.type === 'expense')
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+  for (const t of purchases) {
+    const asset = pool.find((a) => !matched.has(a.id) && a.cost === t.amount);
+    if (!asset) {
+      unmatched.push(t);
+      continue;
+    }
+    matched.add(asset.id);
+    result.set(t.id, Math.floor((t.amount * businessRatioOf(asset)) / 100));
+  }
+  const rest = pool.filter((a) => !matched.has(a.id));
+  const restCost = rest.reduce((s, a) => s + a.cost, 0);
+  const restWeighted = rest.reduce((s, a) => s + a.cost * businessRatioOf(a), 0);
+  for (const t of unmatched) {
+    // 金額 × 加重合計 は大きな資産で 2^53 を超えうるため BigInt で切り捨て計算する
+    result.set(
+      t.id,
+      restCost > 0
+        ? Number((BigInt(t.amount) * BigInt(restWeighted)) / (BigInt(restCost) * BigInt(100)))
+        : t.amount,
+    );
+  }
+  return result;
 }
 
 export interface TaxSummary {
@@ -87,9 +150,11 @@ export interface TaxSummary {
   salesTax: number;
   /** 非課税・不課税の収入(参考) */
   salesOther: number;
-  /** 課税仕入(税込・家事按分後の事業分のみ) */
+  /** 課税仕入(税込・家事按分後の事業分のみ。固定資産の取得を含む) */
   purchase10: number;
   purchase8: number;
+  /** 課税仕入のうち固定資産の取得(税込・事業専用割合を反映した事業分) */
+  purchaseAssets: number;
   /** 課税仕入に係る消費税の全額 */
   purchaseTax: number;
   /** 控除可能な仕入税額(適格分 + 適格なし分×経過措置) */
@@ -107,11 +172,15 @@ export interface TaxSummary {
   paySelected: number;
 }
 
-/** 指定年の消費税集計(税込経理・概算) */
+/**
+ * 指定年の消費税集計(税込経理・概算)。
+ * assets(固定資産台帳)は「固定資産の取得」の事業専用割合を課税仕入に反映するために使う。
+ */
 export function summarizeTax(
   transactions: Transaction[],
   year: number,
   settings: TaxSettings,
+  assets: FixedAsset[] = [],
 ): TaxSummary {
   let sales10 = 0;
   let sales8 = 0;
@@ -119,13 +188,15 @@ export function summarizeTax(
   let salesOther = 0;
   let purchase10 = 0;
   let purchase8 = 0;
+  let purchaseAssets = 0;
   let purchaseTax = 0;
   let deductibleTax = 0;
   let nonQualifiedCount = 0;
   let nonQualifiedLostTax = 0;
+  const assetBase = assetPurchaseBusinessAmounts(transactions, assets, year);
 
   for (const t of transactionsOfYear(transactions, year)) {
-    if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) continue;
+    if (!isTaxRelevant(t.account)) continue;
     const cat = effectiveTaxCategory(t);
 
     if (t.type === 'income') {
@@ -141,12 +212,13 @@ export function summarizeTax(
       continue;
     }
 
-    // 経費: 家事按分後の事業分だけが仕入税額控除の対象になる
-    const base = t.businessAmount;
+    // 経費: 家事按分後の事業分だけが仕入税額控除の対象になる(固定資産は事業専用割合)
+    const base = assetBase.get(t.id) ?? t.businessAmount;
     if (base <= 0 || (cat !== 'taxable10' && cat !== 'taxable8')) continue;
     const rate = cat === 'taxable10' ? 10 : 8;
     if (rate === 10) purchase10 += base;
     else purchase8 += base;
+    if (assetBase.has(t.id)) purchaseAssets += base;
     const tax = taxInclusive(base, rate);
     purchaseTax += tax;
     if (t.qualifiedInvoice === false) {
@@ -182,6 +254,7 @@ export function summarizeTax(
     salesOther,
     purchase10,
     purchase8,
+    purchaseAssets,
     purchaseTax,
     deductibleTax,
     nonQualifiedCount,
@@ -231,6 +304,7 @@ export function calcTaxReturn(
   transactions: Transaction[],
   year: number,
   settings: TaxSettings,
+  assets: FixedAsset[] = [],
 ): TaxReturnCalc {
   // 税込の課税売上と課税仕入(仕入は適格/経過措置の区分ごと)を集計する
   let salesIncl10 = 0;
@@ -238,9 +312,10 @@ export function calcTaxReturn(
   // 仕入バケツ: 控除割合(100/80/50/0)ごとの税込合計
   const purchase10 = new Map<number, number>();
   const purchase8 = new Map<number, number>();
+  const assetBase = assetPurchaseBusinessAmounts(transactions, assets, year);
 
   for (const t of transactionsOfYear(transactions, year)) {
-    if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) continue;
+    if (!isTaxRelevant(t.account)) continue;
     const cat = effectiveTaxCategory(t);
     if (cat !== 'taxable10' && cat !== 'taxable8') continue;
     if (t.type === 'income') {
@@ -248,7 +323,7 @@ export function calcTaxReturn(
       else salesIncl8 += t.amount;
       continue;
     }
-    const base = t.businessAmount;
+    const base = assetBase.get(t.id) ?? t.businessAmount;
     if (base <= 0) continue;
     const ratio = t.qualifiedInvoice === false ? nonQualifiedDeductionRate(t.date) : 100;
     const bucket = cat === 'taxable10' ? purchase10 : purchase8;
@@ -263,7 +338,7 @@ export function calcTaxReturn(
   const tax8 = Math.floor((base8 * 624) / 10_000);
   const salesTaxNational = tax10 + tax8;
 
-  // 本則の控除対象仕入税額(国税): 税込×7.8/110(6.24/108)→ 経過措置は税額の80%/50%
+  // 本則の控除対象仕入税額(国税): 税込×7.8/110(6.24/108)→ 経過措置は税額の80%/70%/50%/30%
   let generalDeductible = 0;
   for (const [ratio, incl] of purchase10) {
     const full = Math.floor((incl * 78) / 1100);

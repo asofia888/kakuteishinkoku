@@ -1,7 +1,7 @@
 /**
  * 税制パラメータの一覧(年度で変わるものを1箇所に集約)。
  * 毎年の税制改正はこのファイルを更新すれば全機能に反映される。
- * 最終確認: 令和7年度税制改正まで反映(2026年時点)。
+ * 最終確認: 令和8年度税制改正まで反映(2026年9月時点)。
  */
 
 // ── 所得税 ──────────────────────────────────────────────
@@ -34,37 +34,60 @@ export interface DeductionStep {
   amount: number;
 }
 
+/** 合計所得2,350万円超の逓減部分(令和7年分以後共通) */
+const BASIC_DEDUCTION_HIGH_INCOME: DeductionStep[] = [
+  { limit: 24_000_000, amount: 480_000 },
+  { limit: 24_500_000, amount: 320_000 },
+  { limit: 25_000_000, amount: 160_000 },
+  { limit: Infinity, amount: 0 },
+];
+
 /**
- * 基礎控除の表(令和7年度税制改正対応)。
+ * 基礎控除の表(令和8年度税制改正対応)。
  * - 2024年分まで: 48万円(2,400万円超は逓減)
- * - 2025年分以降: 58万円。合計所得132万円以下は95万円(恒久)
- * - 2025・2026年分のみ: 中間所得層への時限上乗せ(88万/68万/63万円)
+ * - 2025年分: 本則58万円 + 特例加算(132万以下95万/336万以下88万/489万以下68万/655万以下63万)
+ * - 2026・2027年分: 本則62万円 + 特例加算(489万以下104万/655万以下67万)
+ * - 2028年分以後: 本則62万円。合計所得132万円以下は99万円(37万円加算)
+ * 令和8年度改正で基礎控除は物価に連動して見直す仕組みになったため、
+ * 2028年分以後の額は今後の改正で変わりうる(改正のたびにここを更新する)。
  */
 export function basicDeductionTableFor(year: number): DeductionStep[] {
-  if (year <= 2024) {
+  if (year <= 2024) return BASIC_DEDUCTION_HIGH_INCOME;
+  if (year === 2025) {
     return [
-      { limit: 24_000_000, amount: 480_000 },
-      { limit: 24_500_000, amount: 320_000 },
-      { limit: 25_000_000, amount: 160_000 },
-      { limit: Infinity, amount: 0 },
+      { limit: 1_320_000, amount: 950_000 },
+      { limit: 3_360_000, amount: 880_000 },
+      { limit: 4_890_000, amount: 680_000 },
+      { limit: 6_550_000, amount: 630_000 },
+      { limit: 23_500_000, amount: 580_000 },
+      ...BASIC_DEDUCTION_HIGH_INCOME,
     ];
   }
-  const base: DeductionStep[] = [
-    { limit: 1_320_000, amount: 950_000 },
-    ...(year <= 2026
-      ? [
-          { limit: 3_360_000, amount: 880_000 },
-          { limit: 4_890_000, amount: 680_000 },
-          { limit: 6_550_000, amount: 630_000 },
-        ]
-      : []),
-    { limit: 23_500_000, amount: 580_000 },
-    { limit: 24_000_000, amount: 480_000 },
-    { limit: 24_500_000, amount: 320_000 },
-    { limit: 25_000_000, amount: 160_000 },
-    { limit: Infinity, amount: 0 },
+  if (year <= 2027) {
+    return [
+      { limit: 4_890_000, amount: 1_040_000 },
+      { limit: 6_550_000, amount: 670_000 },
+      { limit: 23_500_000, amount: 620_000 },
+      ...BASIC_DEDUCTION_HIGH_INCOME,
+    ];
+  }
+  return [
+    { limit: 1_320_000, amount: 990_000 },
+    { limit: 23_500_000, amount: 620_000 },
+    ...BASIC_DEDUCTION_HIGH_INCOME,
   ];
-  return base;
+}
+
+/**
+ * 給与所得控除の最低保障額(年末調整用)。
+ * 2025年分: 65万円(令和7年度改正)/ 2026・2027年分: 74万円(本則69万円 + 特例5万円)/
+ * 2028年分以後: 69万円(令和8年度改正)。
+ */
+export function salaryDeductionMinimumFor(year: number): number {
+  if (year <= 2024) return 550_000;
+  if (year === 2025) return 650_000;
+  if (year <= 2027) return 740_000;
+  return 690_000;
 }
 
 /** 復興特別所得税(所得税額に対する上乗せ)。2013〜2037年分 */
@@ -79,7 +102,7 @@ export const BLUE_DEDUCTION_OPTIONS = [650_000, 550_000, 100_000] as const;
 export const RESIDENT_TAX = { rate: 0.1, perCapita: 5_000 };
 
 /**
- * 住民税の基礎控除(概算用)。令和7年度改正の基礎控除引き上げは所得税のみで、
+ * 住民税の基礎控除(概算用)。令和7・8年度改正の基礎控除引き上げは所得税のみで、
  * 住民税は43万円のまま(2,400万円超は逓減)。所得税の基礎控除で代用すると
  * 2025年分以降は住民税を大きく過小に見積もるため、基礎控除だけ引き直して計算する。
  */
@@ -100,11 +123,15 @@ export const CONSUMPTION_TAX = { standardRate: 10, reducedRate: 8 } as const;
 /**
  * 適格請求書(インボイス)なしの課税仕入の控除割合(経過措置)。
  * 日付順に評価し、最初に一致した割合を使う。
+ * 令和8年度改正で 2026/10〜70% → 2028/10〜50% → 2030/10〜30% → 2031/10〜0% に緩和
+ * (改正前は 2026/10〜50% → 2029/10〜0%)。
  */
 export const INVOICE_TRANSITION_STEPS: { before: string; rate: number }[] = [
   { before: '2023-10-01', rate: 100 }, // 制度開始前(区分記載請求書で全額控除)
   { before: '2026-10-01', rate: 80 },
-  { before: '2029-10-01', rate: 50 },
+  { before: '2028-10-01', rate: 70 },
+  { before: '2030-10-01', rate: 50 },
+  { before: '2031-10-01', rate: 30 },
 ];
 export const INVOICE_TRANSITION_AFTER = 0;
 
@@ -225,10 +252,29 @@ export const SMALL_ASSET = {
   depreciationMin: 100_000,
   /** 一括償却資産(3年均等)を選べる上限(未満) */
   lumpMax: 200_000,
-  /** 少額減価償却資産の特例の上限(未満・青色申告) */
-  immediateMax: 300_000,
   /** 少額特例の年間合計の上限 */
   immediateYearCap: 3_000_000,
   /** 償却資産税(固定資産税)の免税点(課税標準) */
   shokyakuShisanExemption: 1_500_000,
 };
+
+/**
+ * 少額減価償却資産の特例(青色申告・措法28の2)の取得価額の上限(未満)。取得日で判定する。
+ * 令和8年度改正で 2026/4/1 以後の取得は40万円未満に引き上げ、適用期限は 2029/3/31 まで延長。
+ */
+export const SMALL_ASSET_IMMEDIATE = {
+  /** 40万円未満になる取得日(以後) */
+  raisedFrom: '2026-04-01',
+  /** 適用期限(この日までの取得が対象) */
+  until: '2029-03-31',
+  maxBefore: 300_000,
+  maxAfter: 400_000,
+} as const;
+
+/** 取得日時点の少額特例の上限(未満)。適用期限後の取得は null(特例なし) */
+export function immediateMaxFor(acquiredDate: string): number | null {
+  if (acquiredDate > SMALL_ASSET_IMMEDIATE.until) return null;
+  return acquiredDate >= SMALL_ASSET_IMMEDIATE.raisedFrom
+    ? SMALL_ASSET_IMMEDIATE.maxAfter
+    : SMALL_ASSET_IMMEDIATE.maxBefore;
+}

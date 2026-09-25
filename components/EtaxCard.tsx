@@ -62,7 +62,7 @@ export function EtaxCard({
   const download = () => {
     store.updateIssuer(draft); // 入力を保存してから出力する
     // 軽減税率(8%)対象の売上・仕入(税区分 taxable8 の集計)
-    const taxSummary = summarizeTax(store.transactions, year, store.taxSettings);
+    const taxSummary = summarizeTax(store.transactions, year, store.taxSettings, store.assets);
 
     // 給料賃金の内訳(従業員別: 従事月数=支払があった月の数)
     const inYear = store.payrolls.filter((p) => p.date.startsWith(`${year}-`));

@@ -33,7 +33,7 @@ import {
 import { dateLabel, today, yen } from '@/lib/format';
 import { suggestAccount } from '@/lib/rules';
 import { useStore } from '@/lib/store';
-import { effectiveTaxCategory, TAX_CATEGORY_LABELS } from '@/lib/tax';
+import { effectiveTaxCategory, isTaxRelevant, TAX_CATEGORY_LABELS } from '@/lib/tax';
 import { FundId, TaxCategory, Transaction, TxType } from '@/lib/types';
 
 /** 取込プレビューの1行 */
@@ -769,7 +769,8 @@ function CounterFundControl({ t }: { t: Transaction }) {
 function TaxControls({ t }: { t: Transaction }) {
   const store = useStore();
   if (!store.taxSettings.taxable) return null;
-  if (t.account === null || isExcluded(t.account) || isSettlement(t.account)) return null;
+  // 振替科目は消費税の対象外。ただし「固定資産の取得」は購入時の課税仕入なので税区分を選べる
+  if (!isTaxRelevant(t.account)) return null;
   const cat = effectiveTaxCategory(t);
   const taxable = cat === 'taxable10' || cat === 'taxable8';
   return (
@@ -792,7 +793,7 @@ function TaxControls({ t }: { t: Transaction }) {
       {t.type === 'expense' && taxable && store.taxSettings.method === 'general' && (
         <label
           className="flex items-center gap-1 text-[11px] text-slate-500"
-          title="適格請求書(インボイス)の有無。「なし」の仕入は経過措置分(2026/9まで80%・2029/9まで50%)のみ控除されます"
+          title="適格請求書(インボイス)の有無。「なし」の仕入は経過措置分(2026/9まで80%・2028/9まで70%・2030/9まで50%・2031/9まで30%)のみ控除されます"
         >
           <input
             type="checkbox"

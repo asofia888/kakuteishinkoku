@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assetPurchaseBusinessAmounts,
   calcTaxReturn,
   defaultTaxCategory,
   effectiveTaxCategory,
@@ -7,7 +8,7 @@ import {
   summarizeTax,
   taxInclusive,
 } from './tax';
-import { TaxSettings, Transaction } from './types';
+import { FixedAsset, TaxSettings, Transaction } from './types';
 
 let seq = 0;
 function tx(over: Partial<Transaction> & Pick<Transaction, 'description' | 'type'>): Transaction {
@@ -42,6 +43,11 @@ describe('税区分の自動判定', () => {
     expect(defaultTaxCategory({ type: 'expense', account: null })).toBe('none');
     expect(defaultTaxCategory({ type: 'expense', account: 'excluded' })).toBe('none');
     expect(defaultTaxCategory({ type: 'income', account: 'ar_collect' })).toBe('none');
+    expect(defaultTaxCategory({ type: 'expense', account: 'card_payment' })).toBe('none');
+  });
+
+  it('固定資産の取得は振替科目でも課税仕入(課税10%)になる', () => {
+    expect(defaultTaxCategory({ type: 'expense', account: 'asset_purchase' })).toBe('taxable10');
   });
 
   it('取引に明示された税区分が既定より優先される(住宅家賃の非課税など)', () => {
@@ -58,12 +64,32 @@ describe('taxInclusive: 税込金額からの割り戻し', () => {
   });
 });
 
-describe('nonQualifiedDeductionRate: インボイス経過措置', () => {
-  it('2026/9まで80%・2029/9まで50%・以降0%', () => {
-    expect(nonQualifiedDeductionRate('2026-09-30')).toBe(80);
-    expect(nonQualifiedDeductionRate('2026-10-01')).toBe(50);
-    expect(nonQualifiedDeductionRate('2029-10-01')).toBe(0);
+describe('nonQualifiedDeductionRate: インボイス経過措置(令和8年度改正後)', () => {
+  it('2026/9まで80%・2028/9まで70%・2030/9まで50%・2031/9まで30%・以降0%', () => {
     expect(nonQualifiedDeductionRate('2023-09-30')).toBe(100);
+    expect(nonQualifiedDeductionRate('2023-10-01')).toBe(80);
+    expect(nonQualifiedDeductionRate('2026-09-30')).toBe(80);
+    expect(nonQualifiedDeductionRate('2026-10-01')).toBe(70);
+    expect(nonQualifiedDeductionRate('2028-09-30')).toBe(70);
+    expect(nonQualifiedDeductionRate('2028-10-01')).toBe(50);
+    expect(nonQualifiedDeductionRate('2030-09-30')).toBe(50);
+    expect(nonQualifiedDeductionRate('2030-10-01')).toBe(30);
+    expect(nonQualifiedDeductionRate('2031-09-30')).toBe(30);
+    expect(nonQualifiedDeductionRate('2031-10-01')).toBe(0);
+  });
+
+  it('同じ年の中でも取引日で割合が切り替わる(2026年は9月まで80%・10月から70%)', () => {
+    const s = summarizeTax(
+      [
+        tx({ description: '免税事業者から9月', type: 'expense', amount: 110_000, qualifiedInvoice: false, date: '2026-09-30' }),
+        tx({ description: '免税事業者から10月', type: 'expense', amount: 110_000, qualifiedInvoice: false, date: '2026-10-01' }),
+      ],
+      2026,
+      settings,
+    );
+    // 税10,000×80% + 税10,000×70% = 15,000
+    expect(s.deductibleTax).toBe(15_000);
+    expect(s.nonQualifiedLostTax).toBe(5_000);
   });
 });
 
@@ -159,8 +185,8 @@ describe('summarizeTax: 年間集計', () => {
     const txs2027 = txs.map((t) => ({ ...t, date: '2027-05-01' }));
     const r3 = calcTaxReturn(txs2027, 2027, { taxable: true, method: 'special20', simplifiedType: 1 });
     expect(r3.applied).toBe('general');
-    // 2027年の適格なし仕入は経過措置50%: 39,000×50% = 19,500 → 控除 409,500
-    expect(r3.deductibleNational).toBe(409_500);
+    // 2027年の適格なし仕入は経過措置70%(令和8年度改正): 39,000×70% = 27,300 → 控除 417,300
+    expect(r3.deductibleNational).toBe(417_300);
   });
 
   it('申告書ベース: 控除不足(還付)は円単位のまま・地方も22/78で還付', () => {
@@ -188,5 +214,98 @@ describe('summarizeTax: 年間集計', () => {
 
     const in2022 = summarizeTax([sale('2022-06-15')], 2022, special20);
     expect(in2022.special20Available).toBe(false); // 制度開始(2023年10月)前
+  });
+});
+
+describe('固定資産の取得: 購入年の課税仕入(本則課税の仕入税額控除)', () => {
+  function asset(over: Partial<FixedAsset> & Pick<FixedAsset, 'id' | 'cost'>): FixedAsset {
+    return {
+      name: over.id,
+      acquiredDate: '2026-06-15',
+      method: 'straight',
+      usefulLife: 6,
+      businessRatio: 100,
+      createdAt: 0,
+      ...over,
+    };
+  }
+  const sales = tx({ description: '売上', type: 'income', account: 'sales', amount: 5_500_000 });
+  const buy = (amount: number, over: Partial<Transaction> = {}) =>
+    tx({ description: '備品の購入', type: 'expense', account: 'asset_purchase', amount, ...over });
+
+  it('取得価額の消費税を購入年に控除する(減価償却費ではなく取得時)', () => {
+    const txs = [sales, buy(550_000)];
+    const assets = [asset({ id: 'machine', cost: 550_000 })];
+    const s = summarizeTax(txs, 2026, settings, assets);
+    expect(s.purchase10).toBe(550_000);
+    expect(s.purchaseAssets).toBe(550_000);
+    expect(s.deductibleTax).toBe(50_000);
+    expect(s.payGeneral).toBe(450_000); // 以前は控除漏れで 500,000 になっていた
+
+    // 申告書ベース: 国税 390,000 − 550,000×7.8/110(39,000)= 351,000 → 地方 99,000 → 合計 450,000
+    const r = calcTaxReturn(txs, 2026, settings, assets);
+    expect(r.deductibleNational).toBe(39_000);
+    expect(r.netNational).toBe(351_000);
+    expect(r.totalDue).toBe(450_000);
+  });
+
+  it('家事共用資産は台帳の事業専用割合だけを課税仕入にする(同じ金額の資産と対応づけ)', () => {
+    const txs = [sales, buy(3_300_000), buy(220_000)];
+    const assets = [
+      asset({ id: 'car', cost: 3_300_000, businessRatio: 60 }),
+      asset({ id: 'pc', cost: 220_000, businessRatio: 100 }),
+    ];
+    const s = summarizeTax(txs, 2026, settings, assets);
+    // 車 3,300,000×60% = 1,980,000(税180,000)+ PC 220,000(税20,000)
+    expect(s.purchaseAssets).toBe(2_200_000);
+    expect(s.deductibleTax).toBe(200_000);
+  });
+
+  it('金額で対応がつかない一括払いは、その年の取得資産の加重平均割合を使う', () => {
+    const txs = [buy(3_520_000)]; // 車とPCをまとめて支払い
+    const assets = [
+      asset({ id: 'car', cost: 3_300_000, businessRatio: 60 }),
+      asset({ id: 'pc', cost: 220_000, businessRatio: 100 }),
+    ];
+    const m = assetPurchaseBusinessAmounts(txs, assets, 2026);
+    // (3,300,000×60 + 220,000×100) / 3,520,000 = 62.5% → 2,200,000(個別に対応づけた場合と同額)
+    expect(m.get(txs[0].id)).toBe(2_200_000);
+  });
+
+  it('台帳に登録がない・別の年の資産・繰延資産(開業費)とは対応づけず全額を事業分とする', () => {
+    const t = buy(330_000);
+    const m = assetPurchaseBusinessAmounts(
+      [t],
+      [
+        asset({ id: 'old', cost: 330_000, businessRatio: 50, acquiredDate: '2025-06-01' }),
+        asset({ id: 'kaigyo', cost: 330_000, businessRatio: 50, method: 'deferred' }),
+      ],
+      2026,
+    );
+    expect(m.get(t.id)).toBe(330_000);
+  });
+
+  it('税区分「不課税」(個人からの中古購入など)は控除せず、適格請求書なしは経過措置を適用する', () => {
+    const assets = [asset({ id: 'a', cost: 1_100_000 }), asset({ id: 'b', cost: 550_000 })];
+    const s = summarizeTax(
+      [
+        buy(1_100_000, { taxCategory: 'none' }),
+        buy(550_000, { qualifiedInvoice: false, date: '2026-06-15' }),
+      ],
+      2026,
+      settings,
+      assets,
+    );
+    expect(s.purchaseAssets).toBe(550_000);
+    expect(s.deductibleTax).toBe(40_000); // 税50,000 × 80%
+    expect(s.nonQualifiedCount).toBe(1);
+  });
+
+  it('簡易課税・2割特例の納付額は固定資産の取得の影響を受けない', () => {
+    const assets = [asset({ id: 'machine', cost: 550_000 })];
+    const without = summarizeTax([sales], 2026, settings);
+    const withAsset = summarizeTax([sales, buy(550_000)], 2026, settings, assets);
+    expect(withAsset.paySimplified).toBe(without.paySimplified);
+    expect(withAsset.paySpecial20).toBe(without.paySpecial20);
   });
 });
