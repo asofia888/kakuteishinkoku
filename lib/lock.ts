@@ -1,4 +1,5 @@
 import { buildBalanceSheet, journalForYear } from './ledger';
+import { taxSettingsFor } from './tax';
 import { AppData } from './types';
 
 /**
@@ -9,12 +10,18 @@ import { AppData } from './types';
  * 数字に影響しない変更(承認の付け外し・証憑の添付・請求書のメモなど)はロック中でもできる。
  */
 
-type BookSource = Pick<AppData, 'transactions' | 'assets' | 'inventories' | 'openingBalances'>;
+type BookSource = Pick<
+  AppData,
+  'transactions' | 'assets' | 'inventories' | 'openingBalances' | 'taxSettings' | 'taxSettingsByYear'
+>;
 
 // 同じデータ(オブジェクト)の指紋は使い回す。変更のたびに変更前の年を計算し直さないため
 const cache = new WeakMap<object, Map<number, string>>();
 
-/** 指定年の帳簿の指紋。仕訳(日付・摘要・借方・貸方)と貸借対照表の全行から作る */
+/**
+ * 指定年の帳簿の指紋。仕訳(日付・摘要・借方・貸方)と貸借対照表の全行、
+ * その年分の消費税の設定(申告した消費税の計算方法)から作る
+ */
 export function yearFingerprint(d: BookSource, year: number): string {
   let byYear = cache.get(d);
   const hit = byYear?.get(year);
@@ -27,7 +34,15 @@ export function yearFingerprint(d: BookSource, year: number): string {
     e.credits,
   ]);
   const bs = buildBalanceSheet(d.transactions, year, opening, d.assets, d.inventories);
-  const fp = JSON.stringify([journal, bs.assets, bs.liabilities, bs.equity]);
+  // 消費税の設定は値だけを比べる(どの適用開始年の設定から来たかは問わない)
+  const tax = taxSettingsFor(d, year);
+  const fp = JSON.stringify([
+    journal,
+    bs.assets,
+    bs.liabilities,
+    bs.equity,
+    [tax.taxable, tax.method, tax.simplifiedType],
+  ]);
   if (!byYear) {
     byYear = new Map();
     cache.set(d, byYear);

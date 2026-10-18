@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { basicDeduction, incomeTaxBase, simulateIncomeTax, suggestedLossCarryforward } from './incometax';
+import { blueDeductionOptionsFor, normalizeBlueDeduction } from './taxparams';
 import { DeductionEntry, emptyDeduction } from './types';
 
 function ded(over: Partial<DeductionEntry>): DeductionEntry {
@@ -200,5 +201,78 @@ describe('予定納税・純損失の繰越控除', () => {
     expect(suggestedLossCarryforward(years, 2025)).toBe(2_500_000);
     expect(suggestedLossCarryforward(years, 2026)).toBe(500_000);
     expect(suggestedLossCarryforward([y(2026, -100_000)], 2026)).toBe(0); // その年の赤字は含めない
+  });
+});
+
+describe('青色申告特別控除の枠(令和8年度改正: 2027年分から75万/65万/10万)', () => {
+  it('2026年分までは65万/55万/10万、2027年分からは75万/65万/10万を選べる', () => {
+    expect(blueDeductionOptionsFor(2026)).toEqual([650_000, 550_000, 100_000]);
+    expect(blueDeductionOptionsFor(2027)).toEqual([750_000, 650_000, 100_000]);
+  });
+
+  it('その年分にない枠は読み替える(書面提出の55万は2027年分から10万・75万は2026年分以前は65万)', () => {
+    expect(normalizeBlueDeduction(2027, 550_000)).toBe(100_000);
+    expect(normalizeBlueDeduction(2026, 750_000)).toBe(650_000);
+    expect(normalizeBlueDeduction(2026, 550_000)).toBe(550_000);
+    expect(normalizeBlueDeduction(2027, 750_000)).toBe(750_000);
+    expect(normalizeBlueDeduction(2027, 'x')).toBe(650_000);
+  });
+
+  it('試算は年分に合った枠で計算する(改正前に保存した2027年分の55万は10万で計算)', () => {
+    const r = simulateIncomeTax(3_000_000, { ...emptyDeduction(2027), blueDeduction: 550_000 });
+    expect(r.blueApplied).toBe(100_000);
+    const r75 = simulateIncomeTax(3_000_000, { ...emptyDeduction(2027), blueDeduction: 750_000 });
+    expect(r75.blueApplied).toBe(750_000);
+  });
+});
+
+describe('給与所得との合算(損益通算)', () => {
+  it('給与所得を合計所得に加え、基礎控除は合計所得で判定する', () => {
+    // 2026年分: 事業 300万 − 青色65万 = 235万、給与 500万 → 給与所得 356万 → 合計 591万
+    const r = simulateIncomeTax(3_000_000, ded({ salaryGross: 5_000_000 }));
+    expect(r.businessIncome).toBe(2_350_000);
+    expect(r.salaryIncome).toBe(3_560_000);
+    expect(r.totalIncome).toBe(5_910_000);
+    expect(r.basic).toBe(670_000); // 489万超655万以下
+  });
+
+  it('事業の赤字は給与所得から差し引き、引ききれない分だけが純損失になる', () => {
+    const offset = simulateIncomeTax(-1_000_000, ded({ salaryGross: 3_000_000 }));
+    expect(offset.businessIncome).toBe(-1_000_000); // 決算書の所得金額は赤字のまま
+    expect(offset.totalIncome).toBe(1_020_000); // 給与所得 202万 − 100万
+    expect(offset.lossToCarry).toBe(0);
+    const over = simulateIncomeTax(-3_000_000, ded({ salaryGross: 2_000_000 }));
+    expect(over.totalIncome).toBe(0);
+    expect(over.lossToCarry).toBe(3_000_000 - 1_260_000);
+  });
+
+  it('源泉徴収税額は報酬と給与の合計で差し引く', () => {
+    const r = simulateIncomeTax(
+      2_000_000,
+      ded({ salaryGross: 4_000_000, withholding: 50_000, salaryWithholding: 100_000 }),
+    );
+    expect(r.withholdingTotal).toBe(150_000);
+    const filing = r.totalTax - 150_000;
+    expect(r.filingTax).toBe(filing > 0 ? Math.floor(filing / 100) * 100 : filing);
+  });
+
+  it('給与がなければ従来どおり(赤字の年の事業所得はマイナス・合計所得は0)', () => {
+    const r = simulateIncomeTax(-600_000, ded({}));
+    expect(r.businessIncome).toBe(-600_000);
+    expect(r.salaryIncome).toBe(0);
+    expect(r.totalIncome).toBe(0);
+    expect(r.lossToCarry).toBe(600_000);
+  });
+});
+
+describe('繰越損失の目安と給与所得', () => {
+  it('赤字の年は給与所得と損益通算した残りだけを繰り越し、翌年は給与所得からも差し引く', () => {
+    const years = [
+      { year: 2024, profit: -3_000_000, blueDeduction: 650_000, otherIncome: 1_000_000 },
+      { year: 2025, profit: 0, blueDeduction: 650_000, otherIncome: 500_000 },
+    ];
+    // 2024年: 300万の赤字 − 給与所得100万 = 200万を繰越 → 2025年: 給与所得50万で使い、残り150万
+    expect(suggestedLossCarryforward(years, 2025)).toBe(2_000_000);
+    expect(suggestedLossCarryforward(years, 2026)).toBe(1_500_000);
   });
 });

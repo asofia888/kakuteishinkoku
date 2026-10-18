@@ -38,6 +38,7 @@ function base(): AppData {
       { year: 2026, cash: 0, bank: 700000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
     ],
     taxSettings: DEFAULT_TAX_SETTINGS,
+    taxSettingsByYear: [],
     invoices: [],
     issuer: DEFAULT_ISSUER,
     assets: [],
@@ -77,6 +78,17 @@ describe('changedLockedYears: 申告済みの年の帳簿が変わる変更の�
     }
     const deleted = change(prev, (d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== 'sale25') }));
     expect(changedLockedYears(prev, deleted)).toEqual([2025]);
+  });
+
+  it('消費税の設定: ロック中の年分の設定が変わると検出し、翌年分からの変更は通す', () => {
+    const prev = base();
+    const allYears = change(prev, (d) => ({ ...d, taxSettings: { ...d.taxSettings, taxable: true } }));
+    expect(changedLockedYears(prev, allYears)).toEqual([2025]);
+    const fromNextYear = change(prev, (d) => ({
+      ...d,
+      taxSettingsByYear: [{ ...d.taxSettings, taxable: true, fromYear: 2026 }],
+    }));
+    expect(changedLockedYears(prev, fromNextYear)).toEqual([]);
   });
 
   it('承認の付け外しは帳簿の数字を変えないので通す', () => {

@@ -130,7 +130,7 @@ describe('payrollLedgerCsv: 賃金台帳', () => {
   });
 });
 
-describe('salaryIncomeAfterDeduction: 給与所得控除後の金額(速算式)', () => {
+describe('salaryIncomeAfterDeduction: 給与所得控除後の金額(別表第五)', () => {
   it('最低保障額は年分で変わる(2024年55万/2025年65万/2026・2027年74万/2028年以後69万)', () => {
     expect(salaryIncomeAfterDeduction(1_000_000, 2024)).toBe(450_000); // 100万 − 55万
     expect(salaryIncomeAfterDeduction(1_000_000, 2025)).toBe(350_000); // 100万 − 65万
@@ -143,6 +143,28 @@ describe('salaryIncomeAfterDeduction: 給与所得控除後の金額(速算式)'
   it('2026年分は収入220万円まで最低保障74万円が速算式(30%+8万)を上回る', () => {
     expect(salaryIncomeAfterDeduction(2_000_000, 2026)).toBe(1_260_000); // 速算式68万 < 74万
     expect(salaryIncomeAfterDeduction(2_200_000, 2026)).toBe(1_460_000); // 速算式74万 = 最低保障
+  });
+
+  it('660万円未満は収入を4,000円単位に切り捨てて計算する(別表第五と一致)', () => {
+    // 500万500円 → A=500万 → 500万×80%−44万。速算式(356万400円)より400円少ない
+    expect(salaryIncomeAfterDeduction(5_000_500, 2026)).toBe(3_560_000);
+    expect(salaryIncomeAfterDeduction(1_903_999, 2025)).toBe(1_250_000); // A=190万 → 190万×70%−8万
+    expect(salaryIncomeAfterDeduction(1_899_999, 2025)).toBe(1_249_999); // 最低保障の範囲は円単位
+    expect(salaryIncomeAfterDeduction(6_599_999, 2026)).toBe(4_836_800); // A=659万6千
+    expect(salaryIncomeAfterDeduction(6_600_000, 2026)).toBe(4_840_000); // 660万以上は速算式
+  });
+
+  it('最低保障との境目は年分ごとの固定額の行を使う', () => {
+    // 令和8・9年分(国税庁 No.1410 (注2))
+    expect(salaryIncomeAfterDeduction(2_190_999, 2026)).toBe(1_450_999);
+    expect(salaryIncomeAfterDeduction(2_191_000, 2026)).toBe(1_451_000);
+    expect(salaryIncomeAfterDeduction(2_192_999, 2027)).toBe(1_451_000);
+    expect(salaryIncomeAfterDeduction(2_193_000, 2026)).toBe(1_453_000);
+    expect(salaryIncomeAfterDeduction(2_199_999, 2026)).toBe(1_456_000);
+    // 令和2〜6年分
+    expect(salaryIncomeAfterDeduction(1_619_500, 2024)).toBe(1_069_000);
+    expect(salaryIncomeAfterDeduction(1_627_999, 2024)).toBe(1_074_000);
+    expect(salaryIncomeAfterDeduction(1_628_000, 2024)).toBe(1_076_800); // A×60%+10万
   });
 
   it('速算式の各段階(30%+8万 / 20%+44万 / 10%+110万 / 上限195万)', () => {

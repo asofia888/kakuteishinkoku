@@ -1,4 +1,5 @@
 import { MAX_FILE_SIZE, PortableFile } from './files';
+import { normalizeBlueDeduction } from './taxparams';
 import {
   AnbunSetting,
   AppData,
@@ -23,11 +24,12 @@ import {
   Transaction,
   uid,
   YearEndAdjustment,
+  YearTaxSettings,
 } from './types';
 
 /**
  * バックアップ(JSONエクスポート/インポート)と、外部から来たデータの検証。
- * localStorage の読込にも同じ検証を通し、壊れたデータでアプリが落ちないようにする。
+ * 保存データ(IndexedDB・localStorage)の読込にも同じ検証を通し、壊れたデータでアプリが落ちないようにする。
  */
 
 const APP_TAG = 'shinkoku-snap';
@@ -216,6 +218,8 @@ export function sanitizeAppData(raw: unknown): AppData | null {
     anbunSettings: [...anbunByKey.values()],
     openingBalances: [...obByYear.values()].sort((a, b) => a.year - b.year),
     taxSettings: sanitizeTaxSettings(obj.taxSettings),
+    // 年分ごとの消費税の設定(v3.10.0 以前のデータにはない = 全年分が taxSettings)
+    taxSettingsByYear: sanitizeYearTaxSettings(obj.taxSettingsByYear),
     invoices,
     issuer: sanitizeIssuer(obj.issuer),
     assets,
@@ -583,9 +587,12 @@ function sanitizeDeduction(raw: unknown): DeductionEntry | null {
     spouse: amount(d.spouse),
     dependents: amount(d.dependents),
     others: amount(d.others),
-    blueDeduction:
-      d.blueDeduction === 550000 || d.blueDeduction === 100000 ? d.blueDeduction : 650000,
+    // その年分にない枠(改正前に保存した2027年分の55万円など)は読み替える
+    blueDeduction: normalizeBlueDeduction(d.year, d.blueDeduction),
     withholding: amount(d.withholding),
+    // v3.10.0 以前のデータにはない(給与なしとして読み込む)
+    salaryGross: amount(d.salaryGross),
+    salaryWithholding: amount(d.salaryWithholding),
     // v3.9.0 以前のデータにはない(0 として読み込む)
     prepaidTax: amount(d.prepaidTax),
     lossCarryforward: amount(d.lossCarryforward),
@@ -635,6 +642,17 @@ function sanitizeTaxSettings(raw: unknown): TaxSettings {
         ? (s.simplifiedType as TaxSettings['simplifiedType'])
         : DEFAULT_TAX_SETTINGS.simplifiedType,
   };
+}
+
+/** 年分ごとの消費税の設定。適用開始年ごとに1件(重複していたら後の値を優先) */
+function sanitizeYearTaxSettings(raw: unknown): YearTaxSettings[] {
+  const byYear = new Map<number, YearTaxSettings>();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const fromYear = (item as { fromYear?: unknown } | null)?.fromYear;
+    if (!isYear(fromYear)) continue;
+    byYear.set(fromYear, { ...sanitizeTaxSettings(item), fromYear });
+  }
+  return [...byYear.values()].sort((a, b) => a.fromYear - b.fromYear);
 }
 
 function sanitizeRule(raw: unknown): Rule | null {

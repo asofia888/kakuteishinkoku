@@ -7,6 +7,8 @@ import {
   nonQualifiedDeductionRate,
   summarizeTax,
   taxInclusive,
+  taxSettingsFor,
+  updateTaxSettingsForYear,
 } from './tax';
 import { FixedAsset, TaxSettings, Transaction } from './types';
 
@@ -335,5 +337,39 @@ describe('固定資産の売却代金: 消費税は課税売上・所得税は�
     expect(s.salesTax).toBe(50_000);
     expect(summarizeYear([sale], 2026).totalSales).toBe(0);
     expect(entryForTransaction(sale)!.credits).toEqual([{ account: 'owner_invest', amount: 550_000 }]);
+  });
+});
+
+describe('年分ごとの消費税の設定', () => {
+  const base: TaxSettings = { taxable: false, method: 'general', simplifiedType: 5 };
+
+  it('適用開始年がその年以前で最も新しい設定を使い、なければ最初の設定', () => {
+    const d = {
+      taxSettings: base,
+      taxSettingsByYear: [
+        { taxable: true, method: 'special20' as const, simplifiedType: 5 as const, fromYear: 2024 },
+        { taxable: true, method: 'simplified' as const, simplifiedType: 4 as const, fromYear: 2027 },
+      ],
+    };
+    expect(taxSettingsFor(d, 2023)).toBe(base);
+    expect(taxSettingsFor(d, 2026).method).toBe('special20');
+    expect(taxSettingsFor(d, 2029)).toMatchObject({ method: 'simplified', simplifiedType: 4 });
+    // v3.10.0 以前のデータ(年分ごとの設定なし)は全年分が最初の設定
+    expect(taxSettingsFor({ taxSettings: base }, 2026)).toBe(base);
+  });
+
+  it('変更は「その年分から」の設定になり、前の年分は変わらず翌年分以後は引き継ぐ', () => {
+    let d = { taxSettings: base, taxSettingsByYear: updateTaxSettingsForYear({ taxSettings: base }, 2026, { taxable: true, method: 'special20' }) };
+    expect(taxSettingsFor(d, 2025).taxable).toBe(false);
+    expect(taxSettingsFor(d, 2026)).toMatchObject({ taxable: true, method: 'special20' });
+    expect(taxSettingsFor(d, 2028)).toMatchObject({ taxable: true, method: 'special20' });
+    // 2027年分から簡易課税に(2026年分は2割特例のまま)
+    d = { ...d, taxSettingsByYear: updateTaxSettingsForYear(d, 2027, { method: 'simplified' }) };
+    expect(taxSettingsFor(d, 2026).method).toBe('special20');
+    expect(taxSettingsFor(d, 2027).method).toBe('simplified');
+    expect(d.taxSettingsByYear.map((s) => s.fromYear)).toEqual([2026, 2027]);
+    // 前年分と同じ設定に戻すと、その年分の設定は消える(重複させない)
+    d = { ...d, taxSettingsByYear: updateTaxSettingsForYear(d, 2027, { method: 'special20' }) };
+    expect(d.taxSettingsByYear.map((s) => s.fromYear)).toEqual([2026]);
   });
 });

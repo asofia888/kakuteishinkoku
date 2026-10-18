@@ -1,3 +1,5 @@
+import type { BlueDeductionAmount } from './taxparams';
+
 /** 収入 / 支出 */
 export type TxType = 'income' | 'expense';
 
@@ -140,6 +142,14 @@ export interface TaxSettings {
   method: 'general' | 'simplified' | 'special20';
   /** 簡易課税の事業区分(1〜6)。みなし仕入率を決める */
   simplifiedType: 1 | 2 | 3 | 4 | 5 | 6;
+}
+
+/**
+ * 適用開始年つきの消費税の設定。その年分から次の設定の前年分まで適用する
+ * (課税事業者になった年・簡易課税を選んだ年などで変える。前の年分の計算は変わらない)
+ */
+export interface YearTaxSettings extends TaxSettings {
+  fromYear: number;
 }
 
 export const DEFAULT_TAX_SETTINGS: TaxSettings = {
@@ -387,10 +397,14 @@ export interface DeductionEntry {
   dependents: number;
   /** その他の控除(寡婦・ひとり親・障害者など) */
   others: number;
-  /** 青色申告特別控除(65万/55万/10万) */
-  blueDeduction: 650000 | 550000 | 100000;
-  /** 源泉徴収税額(請求書の源泉から自動集計できる) */
+  /** 青色申告特別控除の枠(2026年分まで65万/55万/10万・2027年分から75万/65万/10万) */
+  blueDeduction: BlueDeductionAmount;
+  /** 報酬の源泉徴収税額(請求書の源泉から自動集計できる) */
   withholding: number;
+  /** 給与の収入金額(勤め先の源泉徴収票の「支払金額」。給与がなければ0) */
+  salaryGross: number;
+  /** 給与の源泉徴収税額(源泉徴収票の「源泉徴収税額」) */
+  salaryWithholding: number;
   /** 予定納税額(第1期・第2期の合計。7月・11月に納付した額) */
   prepaidTax: number;
   /** 前年以前(3年以内)から繰り越された純損失の額(青色申告。本年の所得から差し引く) */
@@ -412,6 +426,8 @@ export function emptyDeduction(year: number): DeductionEntry {
     others: 0,
     blueDeduction: 650000,
     withholding: 0,
+    salaryGross: 0,
+    salaryWithholding: 0,
     prepaidTax: 0,
     lossCarryforward: 0,
   };
@@ -424,8 +440,13 @@ export interface AppData {
   anbunSettings: AnbunSetting[];
   /** 年ごとの期首残高(貸借対照表用) */
   openingBalances: OpeningBalance[];
-  /** 消費税の設定 */
+  /** 消費税の設定(最初の設定。年分ごとに変えた設定は taxSettingsByYear) */
   taxSettings: TaxSettings;
+  /**
+   * 年分ごとに変えた消費税の設定(適用開始年つき)。その年分以後に適用し、
+   * 前の年分の計算は変えない。該当する設定がない年分は taxSettings を使う
+   */
+  taxSettingsByYear: YearTaxSettings[];
   /** 発行した請求書 */
   invoices: Invoice[];
   /** 請求元(自分)の情報 */

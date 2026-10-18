@@ -59,6 +59,7 @@ const goodData: AppData = {
   ],
   openingBalances: [{ year: 2026, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 }],
   taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
+  taxSettingsByYear: [{ taxable: true, method: 'simplified', simplifiedType: 5, fromYear: 2027 }],
   invoices: [
     {
       id: 'inv-1',
@@ -200,6 +201,44 @@ describe('isNewerBackup: バックアップ版数の前方互換チェック', (
 });
 
 describe('sanitizeAppData: 壊れた要素の除去と補正', () => {
+  it('年分ごとの消費税の設定は適用開始年ごとに1件にし、不正な年・値は直す', () => {
+    const data = sanitizeAppData({
+      transactions: [],
+      rules: [],
+      anbunSettings: [],
+      taxSettingsByYear: [
+        { taxable: true, method: 'simplified', simplifiedType: 4, fromYear: 2027 },
+        { taxable: true, method: 'special20', simplifiedType: 5, fromYear: 2026 },
+        { taxable: true, method: 'まとめて', simplifiedType: 9, fromYear: 2027 }, // 後勝ち・値を補正
+        { taxable: true, method: 'general', simplifiedType: 5, fromYear: '2028' }, // 年が不正
+        null,
+      ],
+    })!;
+    expect(data.taxSettingsByYear).toEqual([
+      { taxable: true, method: 'special20', simplifiedType: 5, fromYear: 2026 },
+      { taxable: true, method: 'general', simplifiedType: 5, fromYear: 2027 },
+    ]);
+    // v3.10.0 以前のデータにはない
+    expect(sanitizeAppData({ transactions: [], rules: [], anbunSettings: [] })!.taxSettingsByYear).toEqual([]);
+  });
+
+  it('所得控除の青色申告特別控除は年分にない枠を読み替える(2027年分の55万 → 10万)', () => {
+    const data = sanitizeAppData({
+      transactions: [],
+      rules: [],
+      anbunSettings: [],
+      deductions: [
+        { year: 2026, blueDeduction: 550000 },
+        { year: 2027, blueDeduction: 550000 },
+        { year: 2027.5, blueDeduction: 650000 },
+      ],
+    })!;
+    expect(data.deductions.map((d) => [d.year, d.blueDeduction])).toEqual([
+      [2026, 550_000],
+      [2027, 100_000],
+    ]);
+  });
+
   it('不正な取引(日付・金額・種別)は捨て、正常な取引だけ残す', () => {
     const data = sanitizeAppData({
       transactions: [

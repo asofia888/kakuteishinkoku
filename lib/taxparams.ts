@@ -90,11 +90,84 @@ export function salaryDeductionMinimumFor(year: number): number {
   return 690_000;
 }
 
+/**
+ * 給与所得の金額の表(所得税法別表第五。収入660万円未満)を求めるための年分ごとの定義。
+ * - 収入が exactBelow 未満: 「収入 − 最低保障額」(円単位)
+ * - bands: 最低保障との境目に定められた固定額の行(収入 from 以上 to 未満 → income)
+ * - それ以上: 収入を4,000円単位に切り捨てて計算(国税庁「給与所得の金額の計算」の方法)
+ * estimated: 表が未公表の年分(2028年分以後)。最低保障額だけで推計する
+ */
+export interface SalaryIncomeTable {
+  minimum: number;
+  exactBelow: number;
+  bands: { from: number; to: number; income: number }[];
+  estimated: boolean;
+}
+
+export function salaryIncomeTableFor(year: number): SalaryIncomeTable {
+  const minimum = salaryDeductionMinimumFor(year);
+  // 令和2年分〜令和6年分
+  if (year <= 2024) {
+    return {
+      minimum,
+      exactBelow: 1_619_000,
+      bands: [
+        { from: 1_619_000, to: 1_620_000, income: 1_069_000 },
+        { from: 1_620_000, to: 1_622_000, income: 1_070_000 },
+        { from: 1_622_000, to: 1_624_000, income: 1_072_000 },
+        { from: 1_624_000, to: 1_628_000, income: 1_074_000 },
+      ],
+      estimated: false,
+    };
+  }
+  // 令和7年分(190万円で最低保障と4,000円刻みの表がちょうどつながる)
+  if (year === 2025) return { minimum, exactBelow: 1_900_000, bands: [], estimated: false };
+  // 令和8年分・令和9年分(国税庁 No.1410 の(注2)の表)
+  if (year <= 2027) {
+    return {
+      minimum,
+      exactBelow: 2_191_000,
+      bands: [
+        { from: 2_191_000, to: 2_193_000, income: 1_451_000 },
+        { from: 2_193_000, to: 2_196_000, income: 1_453_000 },
+        { from: 2_196_000, to: 2_200_000, income: 1_456_000 },
+      ],
+      estimated: false,
+    };
+  }
+  return { minimum, exactBelow: 0, bands: [], estimated: true };
+}
+
 /** 復興特別所得税(所得税額に対する上乗せ)。2013〜2037年分 */
 export const RECONSTRUCTION_TAX = { rate: 0.021, fromYear: 2013, toYear: 2037 };
 
-/** 青色申告特別控除の選択肢 */
-export const BLUE_DEDUCTION_OPTIONS = [650_000, 550_000, 100_000] as const;
+/**
+ * 青色申告特別控除の枠(円)。
+ * 令和8年度改正で2027年分(令和9年分)から、正規の簿記で記帳している場合は
+ * 「e-Tax提出 + 優良な電子帳簿の保存等」75万円 /「e-Tax提出」65万円 /「書面提出」10万円になる
+ * (55万円の枠は廃止。2026年分までは 65万円 / 55万円(書面提出)/ 10万円(簡易簿記))。
+ */
+export type BlueDeductionAmount = 750_000 | 650_000 | 550_000 | 100_000;
+
+/** 75万円枠の新設・55万円枠の廃止が適用される最初の年分 */
+export const BLUE_DEDUCTION_REFORM_YEAR = 2027;
+
+/** その年分で選べる青色申告特別控除の枠(大きい順) */
+export function blueDeductionOptionsFor(year: number): BlueDeductionAmount[] {
+  return year >= BLUE_DEDUCTION_REFORM_YEAR
+    ? [750_000, 650_000, 100_000]
+    : [650_000, 550_000, 100_000];
+}
+
+/**
+ * その年分にない枠を読み替える(改正前に保存した2027年分の入力・壊れた値の読込用)。
+ * 55万円(書面提出)は2027年分から10万円、75万円は2026年分以前にはないため65万円にする
+ */
+export function normalizeBlueDeduction(year: number, value: unknown): BlueDeductionAmount {
+  const options = blueDeductionOptionsFor(year);
+  if (options.includes(value as BlueDeductionAmount)) return value as BlueDeductionAmount;
+  return value === 550_000 ? 100_000 : 650_000;
+}
 
 // ── 住民税・事業税(概算用) ──────────────────────────────
 

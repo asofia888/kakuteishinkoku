@@ -3,7 +3,14 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildKessanshoXtx, etaxInputProblems, etaxText, jpEra, KessanshoInput } from './etax';
+import {
+  buildKessanshoXtx,
+  etaxInputProblems,
+  etaxText,
+  etaxYearProblem,
+  jpEra,
+  KessanshoInput,
+} from './etax';
 import { DEFAULT_ISSUER } from './types';
 
 const issuer = {
@@ -247,4 +254,13 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
       }
     },
   );
+});
+
+describe('etaxYearProblem: 対応年分のガード', () => {
+  it('令和7年分(2025年分)だけ出力でき、それ以外の年分は理由を返す', () => {
+    expect(etaxYearProblem(2025)).toBeNull();
+    // 令和8年分を令和7年分の版(RKO0010 v25.0.0)で出力しない
+    expect(etaxYearProblem(2026)).toMatch(/令和8年分.*まだ対応していません/);
+    expect(etaxYearProblem(2024)).toMatch(/令和6年分.*対応していません/);
+  });
 });

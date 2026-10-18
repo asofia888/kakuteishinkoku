@@ -51,7 +51,7 @@ export default function Sidebar() {
       </nav>
       <div className="hidden px-5 py-6 text-xs leading-relaxed text-slate-500 md:block">
         データはこの端末のブラウザ内
-        (localStorage)にのみ保存され、外部には送信されません。
+        (IndexedDB)にのみ保存され、外部には送信されません。
       </div>
     </aside>
   );

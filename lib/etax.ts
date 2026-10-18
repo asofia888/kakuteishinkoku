@@ -25,6 +25,25 @@ const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 export const ETAX_VERSIONS = { procedure: '25.0.0', koa210: '11.0', it: '1.5' } as const;
 
 /**
+ * 申告等データを出力できる年分(ETAX_VERSIONS の手続・帳票の版が対応する年分)。
+ * 手続 RKO0010 と帳票は年分ごとに改定されるため、別の年分を令和7年分の版で出力すると
+ * e-Taxソフトで組み込めないか、年分と様式の食い違ったデータになる。
+ * 新しい年分の仕様が公開されたら ETAX_VERSIONS を上げ、公式XSDで再検証してからここに年を足す
+ */
+export const ETAX_SUPPORTED_YEARS: readonly number[] = [2025];
+
+/** その年分の申告等データを出力できないときの理由(出力できれば null) */
+export function etaxYearProblem(year: number): string | null {
+  if (ETAX_SUPPORTED_YEARS.includes(year)) return null;
+  const supported = ETAX_SUPPORTED_YEARS.map((y) => `令和${y - 2018}年分(${y}年分)`).join('・');
+  const latest = Math.max(...ETAX_SUPPORTED_YEARS);
+  return year > latest
+    ? `令和${year - 2018}年分(${year}年分)の e-Tax 仕様にはまだ対応していません(対応は${supported})。` +
+        '国税庁が新しい年分の仕様を公開したら対応します。それまでは転記ガイド・様式イメージを見ながら、作成コーナーまたは e-Taxソフトで入力してください'
+    : `令和${year - 2018}年分(${year}年分)の e-Tax 仕様には対応していません(対応は${supported})`;
+}
+
+/**
  * e-Tax の文字列型(general:str)で使えない文字を直す。
  * 使える文字は基本ラテン・ひらがな・全角カタカナ・漢字・全角英数記号など。
  * 半角カタカナ(銀行明細由来の「ｶﾌﾞｼｷｶﾞｲｼｬ」など)や絵文字が1文字でもあると

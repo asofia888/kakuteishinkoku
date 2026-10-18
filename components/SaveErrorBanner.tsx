@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { downloadText } from '@/lib/csv';
-import { BROKEN_STORAGE_KEY, useStore } from '@/lib/store';
+import { readSalvaged } from '@/lib/persist';
+import { useStore } from '@/lib/store';
 
 /**
  * データ保全の警告バナー(最終防衛ライン)。
@@ -16,12 +17,10 @@ export default function SaveErrorBanner() {
   const [corruptDismissed, setCorruptDismissed] = useState(false);
 
   const downloadSalvaged = () => {
-    try {
-      const raw = localStorage.getItem(BROKEN_STORAGE_KEY);
+    // 読み出せない環境でもバナーは出し続ける
+    void readSalvaged().then((raw) => {
       if (raw) downloadText('申告スナップ_退避データ.json', raw, 'application/json');
-    } catch {
-      // 読み出せない環境でもバナーは出し続ける
-    }
+    });
   };
 
   return (

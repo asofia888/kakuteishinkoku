@@ -6,13 +6,49 @@ import {
   INVOICE_TRANSITION_STEPS,
   smallBusinessSpecialRate,
 } from './taxparams';
-import { FixedAsset, TaxCategory, TaxSettings, Transaction } from './types';
+import { AppData, FixedAsset, TaxCategory, TaxSettings, Transaction, YearTaxSettings } from './types';
 
 /**
  * 消費税(インボイス制度)の集計。
  * 帳簿は税込経理方式を前提とし、税込金額から消費税額を割り戻して概算する。
  * 実際の申告書(付表)は国税・地方消費税を分けて端数処理するため、金額は目安。
  */
+
+type TaxSettingsSource = Pick<AppData, 'taxSettings'> & {
+  taxSettingsByYear?: AppData['taxSettingsByYear'];
+};
+
+/** その年分に適用する消費税の設定(適用開始年がその年以前で最も新しい設定。なければ最初の設定) */
+export function taxSettingsFor(d: TaxSettingsSource, year: number): TaxSettings {
+  let found: YearTaxSettings | null = null;
+  for (const s of d.taxSettingsByYear ?? []) {
+    if (s.fromYear <= year && (!found || s.fromYear > found.fromYear)) found = s;
+  }
+  // 保存されている設定そのものを返す(画面の再計算の依存が毎回変わらないよう、複製しない)
+  return found ?? d.taxSettings;
+}
+
+function sameTaxSettings(a: TaxSettings, b: TaxSettings): boolean {
+  return a.taxable === b.taxable && a.method === b.method && a.simplifiedType === b.simplifiedType;
+}
+
+/**
+ * 指定年分の消費税の設定を変えた後の taxSettingsByYear。
+ * 変更は「その年分から」の設定として保存し、前の年分(申告済みの年)の計算は変えない。
+ * 翌年分以後は、別に設定した年分がなければこの設定を引き継ぐ。
+ * 前年分と同じ設定に戻したときは、その年分の設定を消して重複させない
+ */
+export function updateTaxSettingsForYear(
+  d: TaxSettingsSource,
+  year: number,
+  patch: Partial<TaxSettings>,
+): YearTaxSettings[] {
+  const next = { ...taxSettingsFor(d, year), ...patch };
+  const others = (d.taxSettingsByYear ?? []).filter((s) => s.fromYear !== year);
+  const before = taxSettingsFor({ taxSettings: d.taxSettings, taxSettingsByYear: others }, year - 1);
+  const list = sameTaxSettings(next, before) ? others : [...others, { ...next, fromYear: year }];
+  return list.sort((a, b) => a.fromYear - b.fromYear);
+}
 
 /** 税区分の表示ラベル */
 export const TAX_CATEGORY_LABELS: Record<TaxCategory, string> = {

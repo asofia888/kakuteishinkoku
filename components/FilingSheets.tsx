@@ -5,6 +5,7 @@ import { summarizeYear } from '@/lib/aggregate';
 import { IncomeTaxResult } from '@/lib/incometax';
 import { KESSANSHO_BLANK_NOS, KessanshoExpenseValues } from '@/lib/kessansho';
 import { BalanceSheet } from '@/lib/ledger';
+import { BLUE_DEDUCTION_REFORM_YEAR } from '@/lib/taxparams';
 import { DeductionEntry, IssuerProfile } from '@/lib/types';
 
 // ── 様式イメージ(印刷用)──
@@ -173,12 +174,14 @@ export function FilingSheets({
                 <FormSection label="所得金額" />
                 <FormRow no="㊸" label="青色申告特別控除前の所得金額" value={summary.profit} strong />
                 <FormRow no="㊹" label="青色申告特別控除額" value={tax.blueApplied} />
-                <FormRow no="㊺" label="所得金額(㊸ − ㊹)" value={tax.totalIncome} strong />
+                <FormRow no="㊺" label="所得金額(㊸ − ㊹)" value={tax.businessIncome} strong />
               </tbody>
             </table>
             <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
-              青色申告特別控除は e-Tax 送信(または優良な電子帳簿保存)で65万円、
-              書面提出は55万円、簡易帳簿は10万円。減価償却の明細(3ページ目)は
+              {year >= BLUE_DEDUCTION_REFORM_YEAR
+                ? '青色申告特別控除は e-Tax 提出で65万円(優良な電子帳簿の保存等もあれば75万円)、書面提出・簡易帳簿は10万円。'
+                : '青色申告特別控除は e-Tax 送信(または優良な電子帳簿保存)で65万円、書面提出は55万円、簡易帳簿は10万円。'}
+              減価償却の明細(3ページ目)は
               固定資産台帳のCSVを使用してください。
             </p>
           </div>
@@ -279,8 +282,15 @@ export function FilingSheets({
             <tbody>
               <FormSection label="収入金額等" />
               <FormRow no="㋐" label="事業(営業等)" value={summary.totalSales} />
+              {deduction.salaryGross > 0 && <FormRow label="給与" value={deduction.salaryGross} />}
               <FormSection label="所得金額等" />
-              <FormRow no="①" label="事業(営業等)── 青色申告特別控除後" value={tax.totalIncome} strong />
+              <FormRow no="①" label="事業(営業等)── 青色申告特別控除後" value={tax.businessIncome} strong />
+              {deduction.salaryGross > 0 && (
+                <>
+                  <FormRow label="給与(給与所得控除後)" value={tax.salaryIncome} />
+                  <FormRow label="合 計" value={tax.totalIncome} strong />
+                </>
+              )}
               <FormSection label="所得から差し引かれる金額" />
               {tax.breakdown.map((l) => (
                 <FormRow key={l.label} label={l.label} value={l.amount} />
@@ -296,7 +306,7 @@ export function FilingSheets({
                 <FormRow no="㉛" label="上の㉚に対する税額(速算表)" value={tax.incomeTax} />
                 <FormRow label="復興特別所得税額(㉛ × 2.1%)" value={tax.reconstructionTax} />
                 <FormRow label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
-                <FormRow label="源泉徴収税額" value={deduction.withholding || null} />
+                <FormRow label="源泉徴収税額" value={tax.withholdingTotal || null} />
                 <FormRow label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
                 <FormRow label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />
                 <FormRow

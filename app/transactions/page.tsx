@@ -912,7 +912,9 @@ function InterestControl({ t, disabled }: { t: Transaction; disabled?: boolean }
 /** 消費税の税区分と適格請求書チェック(課税事業者の設定時のみ表示) */
 function TaxControls({ t, disabled }: { t: Transaction; disabled?: boolean }) {
   const store = useStore();
-  if (!store.taxSettings.taxable) return null;
+  // 消費税の設定は年分ごと(課税事業者になった年・計算方式を変えた年がある)
+  const settings = store.taxSettingsFor(Number(t.date.slice(0, 4)));
+  if (!settings.taxable) return null;
   // 振替科目は消費税の対象外。ただし「固定資産の取得」は購入時の課税仕入なので税区分を選べる
   if (!isTaxRelevant(t.account)) return null;
   const cat = effectiveTaxCategory(t);
@@ -935,7 +937,7 @@ function TaxControls({ t, disabled }: { t: Transaction; disabled?: boolean }) {
           </option>
         ))}
       </select>
-      {t.type === 'expense' && taxable && store.taxSettings.method === 'general' && (
+      {t.type === 'expense' && taxable && settings.method === 'general' && (
         <label
           className="flex items-center gap-1 text-[11px] text-slate-500"
           title="適格請求書(インボイス)の有無。「なし」の仕入は経過措置分(2026/9まで80%・2028/9まで70%・2030/9まで50%・2031/9まで30%)のみ控除されます"

@@ -450,8 +450,9 @@ export default function DashboardPage() {
                 このページの集計は<strong>損益計算書(P/L)に相当</strong>します。あわせて
                 <strong>「帳簿・決算書」ページ</strong>
                 で複式簿記の仕訳帳・総勘定元帳・貸借対照表が自動作成されるため、全取引を仕訳・承認し
-                発生主義で記帳すれば<strong>青色申告特別控除55万円</strong>
-                (e-Tax等による申告なら<strong>65万円</strong>)の帳簿要件に対応できます。
+                発生主義で記帳すれば<strong>青色申告特別控除65万円</strong>
+                (申告書・決算書を e-Tax で提出した場合)の帳簿要件に対応できます。
+                書面で提出すると2026年分までは55万円、2027年分からは10万円になります(令和8年度改正)。
               </li>
               <li>
                 <strong>期ズレ(発生主義)</strong>: 12月分の仕事の対価が翌年1月入金の場合、
@@ -517,7 +518,7 @@ export default function DashboardPage() {
               </p>
             )}
             <p className="mt-3 text-xs leading-relaxed text-slate-500">
-              ※データはこの端末のブラウザ内(localStorage)にのみ保存されています。ブラウザのデータ消去や
+              ※データはこの端末のブラウザ内(IndexedDB)にのみ保存されています。ブラウザのデータ消去や
               端末の故障で帳簿が失われるため、<strong className="text-slate-500">定期的にバックアップをダウンロード</strong>
               して保管してください(帳簿・書類は原則7年の保存義務があります)。
               証憑ファイル(📎)もバックアップJSONに含まれます(復元時はバックアップの証憑で置き換え)。

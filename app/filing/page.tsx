@@ -12,6 +12,7 @@ import { simulateIncomeTax } from '@/lib/incometax';
 import { kessanshoExpenseValues } from '@/lib/kessansho';
 import { buildBalanceSheet } from '@/lib/ledger';
 import { useStore } from '@/lib/store';
+import { BLUE_DEDUCTION_REFORM_YEAR } from '@/lib/taxparams';
 import { emptyDeduction } from '@/lib/types';
 
 /** 転記用の1行(様式の欄名 → 帳簿の金額) */
@@ -198,7 +199,7 @@ export default function FilingPage() {
               value={tax.blueApplied}
               note={`シミュレーションの選択: ${deduction.blueDeduction.toLocaleString()}円(所得が上限)`}
             />
-            <Row label="所得金額" value={tax.totalIncome} strong />
+            <Row label="所得金額" value={tax.businessIncome} strong note="赤字はマイナス" />
           </SectionTable>
         </Card>
 
@@ -319,7 +320,16 @@ export default function FilingPage() {
         <Card title="確定申告書 第一表(作成コーナーでは自動計算される欄もあります)">
           <SectionTable>
             <Row label="収入金額等 ── 事業(営業等)㋐" value={summary.totalSales} />
-            <Row label="所得金額等 ── 事業(営業等)" value={tax.totalIncome} note="青色申告特別控除後" strong />
+            {deduction.salaryGross > 0 && (
+              <Row label="収入金額等 ── 給与" value={deduction.salaryGross} note="源泉徴収票の支払金額" />
+            )}
+            <Row label="所得金額等 ── 事業(営業等)" value={tax.businessIncome} note="青色申告特別控除後" strong />
+            {deduction.salaryGross > 0 && (
+              <>
+                <Row label="所得金額等 ── 給与" value={tax.salaryIncome} note="給与所得控除後" />
+                <Row label="所得金額等 ── 合計" value={tax.totalIncome} note="事業の赤字は給与所得から差し引く" strong />
+              </>
+            )}
             {tax.lossApplied > 0 && (
               <Row label="純損失の繰越控除(第四表で計算)" value={tax.lossApplied} note="所得金額から差し引く" />
             )}
@@ -331,7 +341,7 @@ export default function FilingPage() {
             <Row label="上の金額に対する税額(速算表)" value={tax.incomeTax} />
             <Row label="復興特別所得税(税額 × 2.1%)" value={tax.reconstructionTax} />
             <Row label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
-            <Row label="源泉徴収税額" value={deduction.withholding} />
+            <Row label="源泉徴収税額" value={tax.withholdingTotal} note={deduction.salaryWithholding > 0 ? '報酬 + 給与' : ''} />
             <Row label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
             <Row label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />
             <Row
@@ -342,7 +352,11 @@ export default function FilingPage() {
           </SectionTable>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
             <li>作成コーナーで決算書→申告書の順に入力すると、収入・所得は自動転記されます。</li>
-            <li>65万円控除は e-Tax 送信(または優良な電子帳簿保存)が要件です。書面提出は55万円になります。</li>
+            <li>
+              {year >= BLUE_DEDUCTION_REFORM_YEAR
+                ? '65万円控除は e-Tax での提出が要件です。令和8年度改正により書面提出は10万円になります(75万円は e-Tax に加えて優良な電子帳簿の保存等が要件)。'
+                : '65万円控除は e-Tax 送信(または優良な電子帳簿保存)が要件です。書面提出は55万円になります。'}
+            </li>
             <li>予定納税額・繰り越された純損失は、所得税シミュレーションで入力した値です。</li>
             {tax.lossToCarry > 0 && (
               <li className="font-medium text-amber-800">

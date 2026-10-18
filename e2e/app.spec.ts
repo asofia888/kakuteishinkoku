@@ -60,7 +60,7 @@ test('サンプルデータで全ページの主要機能が動く', async ({ pa
   await expect(page.getByText(/納付見込み|還付見込み/).first()).toBeVisible();
 });
 
-test('データはリロード後も保持される(localStorage永続化)', async ({ page }) => {
+test('データはリロード後も保持される(IndexedDB永続化)', async ({ page }) => {
   await page.goto('./');
   await page.getByRole('button', { name: 'サンプルデータを読み込む' }).first().click();
   await expect(page.getByText('売上(収入)金額 年間合計').first()).toBeVisible();

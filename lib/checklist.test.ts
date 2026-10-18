@@ -27,6 +27,7 @@ function data(over: Partial<AppData>): AppData {
     anbunSettings: [],
     openingBalances: [],
     taxSettings: DEFAULT_TAX_SETTINGS,
+    taxSettingsByYear: [],
     invoices: [],
     issuer: DEFAULT_ISSUER,
     assets: [],

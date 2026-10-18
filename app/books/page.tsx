@@ -158,7 +158,7 @@ export default function BooksPage() {
     <>
       <PageHeader
         title="帳簿・決算書(複式簿記)"
-        description="全取引から複式仕訳を自動生成し、仕訳帳・総勘定元帳・貸借対照表を作成します。青色申告特別控除55万円(e-Tax等なら65万円)の帳簿要件に対応する主要簿です。"
+        description="全取引から複式仕訳を自動生成し、仕訳帳・総勘定元帳・貸借対照表を作成します。青色申告特別控除65万円(e-Taxで提出した場合)の帳簿要件に対応する主要簿です。"
       />
 
       <div className="space-y-6">
@@ -183,10 +183,10 @@ export default function BooksPage() {
         </div>
 
         <Alert tone="info">
-          <strong>55万/65万円控除への道のり</strong>:
+          <strong>65万円控除への道のり</strong>:
           ①すべての取引を仕訳・承認する ②売上は請求時に「売掛金(発生記録)」で計上し、入金行は「売掛金の回収」にする(発生主義)
           ③期首残高を登録する ④この画面の仕訳帳・総勘定元帳・貸借対照表と、ダッシュボードの科目別集計(損益計算書)を保存する
-          ⑤e-Tax で申告すると65万円控除。
+          ⑤申告書・決算書を期限内に e-Tax で提出すると65万円控除(書面提出は2026年分まで55万円、2027年分からは10万円)。
         </Alert>
 
         {message && <Alert tone="success">{message}</Alert>}

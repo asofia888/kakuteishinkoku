@@ -122,3 +122,41 @@ test('証憑: 10MBを超えるファイルは保存されず、警告が表示�
   // ファイル名は警告文の中の1回だけ = 証憑一覧には保存されていない
   await expect(page.getByText('huge-receipt.pdf')).toHaveCount(1);
 });
+
+test('旧版(localStorage)の帳簿データは IndexedDB へ移行され、localStorage から消える', async ({ page }) => {
+  const year = new Date().getFullYear();
+  const legacy = {
+    transactions: [
+      {
+        id: 'legacy-1',
+        date: `${year}-04-10`,
+        amount: 123456,
+        description: '移行テストの売上',
+        type: 'income',
+        account: 'sales',
+        approved: true,
+        anbunApplied: false,
+        businessAmount: 123456,
+        source: 'manual',
+        createdAt: 1,
+        fund: 'bank',
+      },
+    ],
+    rules: [],
+    anbunSettings: [],
+  };
+  // v3.10.0 以前と同じく localStorage に保存された状態から起動する(最初の読込の前に1回だけ置く)
+  await page.addInitScript((json) => {
+    if (sessionStorage.getItem('legacy-seeded')) return;
+    localStorage.setItem('shinkoku-snap:v2', json);
+    sessionStorage.setItem('legacy-seeded', '1');
+  }, JSON.stringify(legacy));
+
+  await page.goto('./');
+  await nav(page, /取引一覧/);
+  await expect(page.getByText('移行テストの売上').first()).toBeVisible();
+  // 移行が終わると localStorage の旧データは消え、再読込後も IndexedDB から読める
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('shinkoku-snap:v2'))).toBeNull();
+  await page.reload();
+  await expect(page.getByText('移行テストの売上').first()).toBeVisible();
+});

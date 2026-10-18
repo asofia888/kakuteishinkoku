@@ -5,7 +5,7 @@ import { Alert, btn, Card, input } from '@/components/ui';
 import { summarizeYear } from '@/lib/aggregate';
 import { depreciationRowsForYear } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
-import { buildKessanshoXtx, EtaxPayrollRow, etaxInputProblems } from '@/lib/etax';
+import { buildKessanshoXtx, EtaxPayrollRow, etaxInputProblems, etaxYearProblem } from '@/lib/etax';
 import { today } from '@/lib/format';
 import { IncomeTaxResult } from '@/lib/incometax';
 import { kessanshoExpenseValues } from '@/lib/kessansho';
@@ -58,12 +58,14 @@ export function EtaxCard({
     yago: yago.trim(),
     shokugyo: shokugyo.trim(),
   };
+  // 対応していない年分は、入力が揃っていても出力しない(旧仕様のデータになるため)
+  const yearProblem = etaxYearProblem(year);
   const problems = etaxInputProblems(draft);
 
   const download = () => {
     store.updateIssuer(draft); // 入力を保存してから出力する
     // 軽減税率(8%)対象の売上・仕入(税区分 taxable8 の集計)
-    const taxSummary = summarizeTax(store.transactions, year, store.taxSettings, store.assets);
+    const taxSummary = summarizeTax(store.transactions, year, store.taxSettingsFor(year), store.assets);
 
     // 給料賃金の内訳(従業員別: 従事月数=支払があった月の数)
     const inYear = store.payrolls.filter((p) => p.date.startsWith(`${year}-`));
@@ -118,7 +120,8 @@ export function EtaxCard({
         expensesTotal,
         net: summary.profit,
         blueApplied: tax.blueApplied,
-        income: tax.totalIncome,
+        // 決算書の所得金額(㊺)は事業所得のみ。赤字はマイナスのまま
+        income: tax.businessIncome,
         blueOption: deduction.blueDeduction,
       },
       monthly: { sales: summary.monthlySales, purchases: monthlyPurchases },
@@ -204,6 +207,11 @@ export function EtaxCard({
       <p className="mt-2 text-[11px] text-slate-500">
         氏名・住所は請求書発行ページの「請求元情報」と共通です({iss.name || '未入力'} / {iss.address || '住所未入力'})。
       </p>
+      {yearProblem && (
+        <div className="mt-3">
+          <Alert tone="warning">{yearProblem}</Alert>
+        </div>
+      )}
       {problems.length > 0 && (
         <ul className="mt-3 list-disc pl-5 text-xs text-amber-700">
           {problems.map((p) => (
@@ -215,7 +223,7 @@ export function EtaxCard({
         <button
           type="button"
           className={btn.primary}
-          disabled={problems.length > 0}
+          disabled={yearProblem !== null || problems.length > 0}
           onClick={download}
         >
           ⬇ 申告等データ(.xtx)をダウンロード

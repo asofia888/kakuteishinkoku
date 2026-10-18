@@ -41,7 +41,9 @@ export default function TaxPage() {
     [store.transactions],
   );
 
-  const settings = store.taxSettings;
+  // 設定は年分ごと(課税事業者になった年・簡易課税を選んだ年から変わる)
+  const settings = store.taxSettingsFor(year);
+  const locked = store.lockedYears.includes(year);
   // 固定資産の取得は台帳の事業専用割合を反映して課税仕入にするため、台帳も渡す
   const summary = useMemo(
     () => summarizeTax(store.transactions, year, settings, store.assets),
@@ -67,65 +69,6 @@ export default function TaxPage() {
       />
 
       <div className="space-y-6">
-        <Card title="消費税の設定">
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={settings.taxable}
-              onChange={(e) => store.updateTaxSettings({ taxable: e.target.checked })}
-            />
-            課税事業者である(インボイス発行事業者に登録している)
-          </label>
-          {!settings.taxable && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
-              免税事業者の間は申告・納付は不要です(下の集計は参考表示)。基準期間(2年前)の課税売上高が1,000万円を超えると課税事業者になります。
-            </p>
-          )}
-
-          <div className={`mt-4 space-y-2 ${settings.taxable ? '' : 'opacity-50'}`}>
-            {METHODS.map((m) => (
-              <label key={m.id} className="flex items-start gap-2 text-sm text-slate-700">
-                <input
-                  type="radio"
-                  name="tax-method"
-                  className="mt-0.5"
-                  checked={settings.method === m.id}
-                  disabled={!settings.taxable}
-                  onChange={() => store.updateTaxSettings({ method: m.id })}
-                />
-                <span>
-                  <span className="font-medium">{m.label}</span>
-                  <span className="block text-xs text-slate-500">{m.hint}</span>
-                </span>
-              </label>
-            ))}
-            {settings.method === 'simplified' && (
-              <div className="ml-6">
-                <label htmlFor="tax-simplified-type" className="mb-1 block text-xs font-medium text-slate-500">
-                  事業区分(みなし仕入率)
-                </label>
-                <select
-                  id="tax-simplified-type"
-                  className={selectCls}
-                  value={settings.simplifiedType}
-                  disabled={!settings.taxable}
-                  onChange={(e) =>
-                    store.updateTaxSettings({
-                      simplifiedType: Number(e.target.value) as TaxSettings['simplifiedType'],
-                    })
-                  }
-                >
-                  {SIMPLIFIED_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-        </Card>
-
         <div className="flex items-center gap-3">
           <select
             aria-label="対象年度"
@@ -143,6 +86,72 @@ export default function TaxPage() {
             <span className="text-xs text-slate-500">免税事業者のため参考表示です</span>
           )}
         </div>
+
+        <Card title={`${year}年分の消費税の設定`}>
+          <p className="mb-3 text-xs leading-relaxed text-slate-500">
+            {locked
+              ? `${year}年分は申告済み(ロック中)のため変更できません。修正申告などで直す場合は、帳簿・決算書ページでロックを解除してください。`
+              : `変更は${year}年分から適用され、前の年分の計算は変わりません。翌年分以後も、別に設定しない限りこの設定を引き継ぎます。`}
+          </p>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={settings.taxable}
+              disabled={locked}
+              onChange={(e) => store.updateTaxSettings(year, { taxable: e.target.checked })}
+            />
+            課税事業者である(インボイス発行事業者に登録している)
+          </label>
+          {!settings.taxable && (
+            <p className="mt-2 text-xs leading-relaxed text-slate-500">
+              免税事業者の間は申告・納付は不要です(下の集計は参考表示)。基準期間(2年前)の課税売上高が1,000万円を超えると課税事業者になります。
+            </p>
+          )}
+
+          <div className={`mt-4 space-y-2 ${settings.taxable ? '' : 'opacity-50'}`}>
+            {METHODS.map((m) => (
+              <label key={m.id} className="flex items-start gap-2 text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="tax-method"
+                  className="mt-0.5"
+                  checked={settings.method === m.id}
+                  disabled={!settings.taxable || locked}
+                  onChange={() => store.updateTaxSettings(year, { method: m.id })}
+                />
+                <span>
+                  <span className="font-medium">{m.label}</span>
+                  <span className="block text-xs text-slate-500">{m.hint}</span>
+                </span>
+              </label>
+            ))}
+            {settings.method === 'simplified' && (
+              <div className="ml-6">
+                <label htmlFor="tax-simplified-type" className="mb-1 block text-xs font-medium text-slate-500">
+                  事業区分(みなし仕入率)
+                </label>
+                <select
+                  id="tax-simplified-type"
+                  className={selectCls}
+                  value={settings.simplifiedType}
+                  disabled={!settings.taxable || locked}
+                  onChange={(e) =>
+                    store.updateTaxSettings(year, {
+                      simplifiedType: Number(e.target.value) as TaxSettings['simplifiedType'],
+                    })
+                  }
+                >
+                  {SIMPLIFIED_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        </Card>
+
 
         {!settings.taxable && taxableSales > TAXABLE_THRESHOLD && (
           <Alert tone="warning">

@@ -14,8 +14,10 @@ import { sanitizeAppData } from './backup';
 import { buildDemoData } from './demo';
 import { buildInvoiceTransactions } from './invoice';
 import { changedLockedYears, isLockedDate } from './lock';
+import { openPersistence, Persistence } from './persist';
 import { buildPayrollTransactions } from './payroll';
 import { applyRulesToTransactions, buildDefaultRules } from './rules';
+import { taxSettingsFor, updateTaxSettingsForYear } from './tax';
 import {
   AnbunSetting,
   AppData,
@@ -39,14 +41,6 @@ import {
   YearEndAdjustment,
 } from './types';
 
-const STORAGE_KEY = 'shinkoku-snap:v2';
-/**
- * 起動時に読み取れなかった保存データの退避先。
- * 空の状態で起動した直後にユーザーが操作すると保存エフェクトが原本を上書きするため、
- * 上書きされる前に生データをここへ写し、手動復旧の可能性を残す。
- */
-export const BROKEN_STORAGE_KEY = `${STORAGE_KEY}:broken`;
-
 /** 申告済みロックにより保存されなかった変更の通知(バナー表示用) */
 export interface LockNotice {
   /** 帳簿の数字が変わるため変更を止めたロック中の年 */
@@ -57,7 +51,7 @@ export interface LockNotice {
 }
 
 interface Store {
-  /** localStorage の読込が完了したか(SSR/初回描画ではfalse) */
+  /** 保存データの読込が完了したか(SSR/初回描画ではfalse) */
   ready: boolean;
   /** 直近の保存が失敗したか(容量超過など)。true の間は変更が永続化されていない */
   saveError: boolean;
@@ -67,7 +61,8 @@ interface Store {
   rules: Rule[];
   anbunSettings: AnbunSetting[];
   openingBalances: OpeningBalance[];
-  taxSettings: TaxSettings;
+  /** その年分に適用する消費税の設定 */
+  taxSettingsFor: (year: number) => TaxSettings;
   invoices: Invoice[];
   issuer: IssuerProfile;
   assets: FixedAsset[];
@@ -131,7 +126,11 @@ interface Store {
 
   /** 期首残高を登録・更新(年ごとに1件) */
   setOpeningBalance: (ob: OpeningBalance) => void;
-  updateTaxSettings: (patch: Partial<TaxSettings>) => void;
+  /**
+   * 消費税の設定を「その年分から」変更する(前の年分は変わらない。翌年分以後は引き継ぐ)。
+   * ロック中の年の設定が変わるときは保存されない
+   */
+  updateTaxSettings: (year: number, patch: Partial<TaxSettings>) => void;
 
   addInvoice: (inv: Omit<Invoice, 'id' | 'createdAt'>) => void;
   updateInvoice: (id: string, patch: Partial<Invoice>) => void;
@@ -184,6 +183,7 @@ function emptyData(): AppData {
     anbunSettings: [],
     openingBalances: [],
     taxSettings: { ...DEFAULT_TAX_SETTINGS },
+    taxSettingsByYear: [],
     invoices: [],
     issuer: { ...DEFAULT_ISSUER },
     assets: [],
@@ -199,37 +199,45 @@ function emptyData(): AppData {
   };
 }
 
-/** 解釈できなかった保存データを退避キーへ写す(原本が上書きで消える前に保全する) */
-function salvageBrokenData(raw: string | null) {
-  if (!raw) return;
+/**
+ * 保存されていた値(IndexedDB はオブジェクト、localStorage は JSON 文字列)を読む。
+ * バックアップ復元と同じ検証を通し、壊れた要素が混ざっていても起動できるようにする。読めなければ null
+ */
+function parseStored(value: unknown): AppData | null {
   try {
-    localStorage.setItem(BROKEN_STORAGE_KEY, raw);
+    const parsed = (typeof value === 'string' ? JSON.parse(value) : value) as Partial<AppData>;
+    const data = sanitizeAppData(parsed);
+    if (!data) return null;
+    // 保存データにルール配列が無い(破損している)場合のみ初期ルールを補う
+    if (!Array.isArray(parsed.rules)) data.rules = buildDefaultRules();
+    return data;
   } catch {
-    // 退避すら失敗する環境(容量不足等)でも起動は続ける。corrupted フラグで警告は出る
+    return null;
   }
 }
 
-function loadData(): { data: AppData; corrupted: boolean } {
-  let raw: string | null = null;
+async function loadData(p: Persistence): Promise<{ data: AppData; corrupted: boolean }> {
+  let stored;
   try {
-    raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { data: emptyData(), corrupted: false };
-    const parsed = JSON.parse(raw) as Partial<AppData>;
-    // バックアップ復元と同じ検証を通し、壊れた要素が混ざっていても起動できるようにする
-    const data = sanitizeAppData(parsed);
-    if (!data) {
-      salvageBrokenData(raw);
-      return { data: emptyData(), corrupted: true };
-    }
-    // 保存データにルール配列が無い(破損している)場合のみ初期ルールを補う
-    if (!Array.isArray(parsed.rules)) data.rules = buildDefaultRules();
-    return { data, corrupted: false };
+    stored = await p.load();
   } catch {
-    salvageBrokenData(raw);
-    // raw が取れた上での失敗(JSON破損)だけを「破損」として警告する。
-    // localStorage 自体に触れない環境(raw === null)は空起動のみで警告しない
-    return { data: emptyData(), corrupted: raw !== null };
+    // 保存先に触れない環境は空で起動する(読めたのに壊れていた場合だけ警告する)
+    return { data: emptyData(), corrupted: false };
   }
+  if (!stored) return { data: emptyData(), corrupted: false };
+  const data = parseStored(stored.value);
+  if (!data) {
+    // 空の状態で起動した直後に操作すると保存が原本を上書きするため、先に退避して手動復旧の道を残す
+    await p.salvage(stored.value, stored.legacy).catch(() => {
+      // 退避すら失敗する環境(容量不足等)でも起動は続ける。corrupted フラグで警告は出る
+    });
+    return { data: emptyData(), corrupted: true };
+  }
+  if (stored.legacy) {
+    // v3.10.0 以前の localStorage のデータを IndexedDB へ移す。失敗しても次の保存で書かれる
+    await p.migrate(data).catch(() => {});
+  }
+  return { data, corrupted: false };
 }
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
@@ -239,6 +247,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [dataCorrupted, setDataCorrupted] = useState(false);
   const [lockNotice, setLockNotice] = useState<LockNotice | null>(null);
   const skipSave = useRef(true);
+  // 保存先(IndexedDB、使えなければ localStorage)。読込が終わるまで null
+  const persistRef = useRef<Persistence | null>(null);
   // 最新のデータ。変更は必ずこれを起点に計算する(同じイベント内で続けて変更しても前の変更を失わない。
   // 変更の可否(ロック判定)を state 更新の外で同期的に決めるためにも使う)
   const dataRef = useRef<AppData>(data);
@@ -247,52 +257,56 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setData(next);
   }, []);
 
-  // 初回マウント時にlocalStorageから読込(SSRと初回描画の不一致を避ける)
+  // 初回マウント時に保存データを読込(SSRと初回描画の不一致を避ける)。
+  // あわせて別タブでの変更を購読する(複数タブで同時編集したとき、後から保存したタブが
+  // 相手の変更を丸ごと上書きして帳簿が巻き戻るのを防ぐ)
   useEffect(() => {
-    const { data: loaded, corrupted } = loadData();
-    // 保存後に按分設定だけ変わっているケースに備えて読込時にも再計算
-    loaded.transactions = applyAnbun(loaded.transactions, loaded.anbunSettings);
-    skipSave.current = true;
-    commit(loaded);
-    if (corrupted) setDataCorrupted(true);
-    setReady(true);
-  }, [commit]); // commit は不変(初回の1回だけ実行される)
-
-  // 別タブでの変更を反映する(複数タブで同時編集したとき、後から保存したタブが
-  // 相手の変更を丸ごと上書きして帳簿が巻き戻るのを防ぐ)。
-  // storage イベントは変更を行った本人のタブでは発火しない。
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== STORAGE_KEY || e.newValue === null) return;
-      try {
-        const received = sanitizeAppData(JSON.parse(e.newValue));
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void (async () => {
+      const persistence = await openPersistence();
+      const { data: loaded, corrupted } = await loadData(persistence);
+      if (cancelled) {
+        persistence.close();
+        return;
+      }
+      persistRef.current = persistence;
+      // 保存後に按分設定だけ変わっているケースに備えて読込時にも再計算
+      loaded.transactions = applyAnbun(loaded.transactions, loaded.anbunSettings);
+      skipSave.current = true;
+      commit(loaded);
+      if (corrupted) setDataCorrupted(true);
+      setReady(true);
+      unsubscribe = persistence.subscribe((value) => {
+        const received = parseStored(value);
+        // 壊れた値は無視して自タブのデータを守る
         if (!received) return;
         received.transactions = applyAnbun(received.transactions, received.anbunSettings);
         // 受け取った内容は保存済みの値そのものなので、保存し直さない
         skipSave.current = true;
         commit(received);
-      } catch {
-        // 壊れた値は無視して自タブのデータを守る
-      }
+      });
+    })();
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, [commit]);
+  }, [commit]); // commit は不変(初回の1回だけ実行される)
 
-  // 変更を保存(読込直後の1回はスキップ)
+  // 変更を保存(読込直後・他タブからの取り込み直後はスキップ)
   useEffect(() => {
     if (!ready) return;
     if (skipSave.current) {
       skipSave.current = false;
       return;
     }
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setSaveError(false);
-    } catch {
-      // 容量超過などで保存できない場合はバナーで警告する(次の変更時に再試行される)
-      setSaveError(true);
-    }
+    const persistence = persistRef.current;
+    if (!persistence) return;
+    // 容量超過などで保存できない場合はバナーで警告する(次の変更時に再試行される)
+    persistence.save(data).then(
+      () => setSaveError(false),
+      () => setSaveError(true),
+    );
   }, [data, ready]);
 
   /**
@@ -329,7 +343,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       rules: data.rules,
       anbunSettings: data.anbunSettings,
       openingBalances: data.openingBalances,
-      taxSettings: data.taxSettings,
+      taxSettingsFor: (year) => taxSettingsFor(data, year),
       invoices: data.invoices,
       issuer: data.issuer,
       assets: data.assets,
@@ -537,8 +551,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           ].sort((a, b) => a.year - b.year),
         })),
 
-      updateTaxSettings: (patch) =>
-        mutate((prev) => ({ ...prev, taxSettings: { ...prev.taxSettings, ...patch } })),
+      updateTaxSettings: (year, patch) =>
+        mutate((prev) => ({
+          ...prev,
+          taxSettingsByYear: updateTaxSettingsForYear(prev, year, patch),
+        })),
 
       addInvoice: (inv) =>
         mutate((prev) => ({
@@ -697,6 +714,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       clearAll: () => {
         mutate(() => emptyData(), { replaceAll: true });
+        // 手動復旧用に残していた写し(退避データ等)も消す
+        void persistRef.current?.discardRecoveryCopies().catch(() => {});
       },
 
       // AppData全体を丸ごと置き換える。スライスを列挙しない(新フィールドの追加漏れを防ぐ)

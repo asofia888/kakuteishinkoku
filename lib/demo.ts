@@ -214,6 +214,7 @@ export function buildDemoData(): AppData {
       { year, cash: 50000, bank: 800000, receivable: 0, card: 0, payable: 0, loan: 0, deposit: 0 },
     ],
     taxSettings: { taxable: true, method: 'special20', simplifiedType: 5 },
+    taxSettingsByYear: [],
     invoices: [
       {
         id: uid(),

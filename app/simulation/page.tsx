@@ -4,14 +4,22 @@ import React, { useMemo, useState } from 'react';
 import { Alert, btn, Card, input, PageHeader, selectCls, StatCard } from '@/components/ui';
 import { availableYears, summarizeYear } from '@/lib/aggregate';
 import { yen } from '@/lib/format';
-import { simulateIncomeTax, suggestedLossCarryforward } from '@/lib/incometax';
+import { salaryIncomeAfterDeduction, simulateIncomeTax, suggestedLossCarryforward } from '@/lib/incometax';
 import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
+import {
+  BLUE_DEDUCTION_REFORM_YEAR,
+  BlueDeductionAmount,
+  blueDeductionOptionsFor,
+} from '@/lib/taxparams';
 import { DeductionEntry, emptyDeduction } from '@/lib/types';
 
 /** 控除入力フィールドの定義(金額はすべて円) */
 const FIELDS: {
-  key: keyof Omit<DeductionEntry, 'year' | 'blueDeduction' | 'withholding' | 'prepaidTax' | 'lossCarryforward'>;
+  key: keyof Omit<
+    DeductionEntry,
+    'year' | 'blueDeduction' | 'withholding' | 'salaryGross' | 'salaryWithholding' | 'prepaidTax' | 'lossCarryforward'
+  >;
   label: string;
   hint: string;
 }[] = [
@@ -26,6 +34,21 @@ const FIELDS: {
   { key: 'dependents', label: '扶養控除額', hint: '一般38万円/人・特定扶養(19〜22歳)63万円/人などの合計' },
   { key: 'others', label: 'その他の控除', hint: '寡婦・ひとり親(35万円)・障害者控除などの合計' },
 ];
+
+/** 青色申告特別控除の枠の表示名(2027年分から書面提出は10万円・75万円枠が新設) */
+function blueDeductionLabel(amount: BlueDeductionAmount, year: number): string {
+  const reformed = year >= BLUE_DEDUCTION_REFORM_YEAR;
+  switch (amount) {
+    case 750_000:
+      return '75万円(複式簿記 + e-Tax提出 + 優良な電子帳簿の保存等)';
+    case 650_000:
+      return reformed ? '65万円(複式簿記 + e-Tax提出)' : '65万円(複式簿記 + e-Tax申告等)';
+    case 550_000:
+      return '55万円(複式簿記・書面提出)';
+    case 100_000:
+      return reformed ? '10万円(書面提出・簡易簿記)' : '10万円(簡易簿記)';
+  }
+}
 
 export default function SimulationPage() {
   const store = useStore();
@@ -58,11 +81,16 @@ export default function SimulationPage() {
       suggestedLossCarryforward(
         years
           .filter((y) => y < year)
-          .map((y) => ({
-            year: y,
-            profit: summarizeYear(store.transactions, y, store.assets, store.inventories).profit,
-            blueDeduction: store.deductions.find((d) => d.year === y)?.blueDeduction ?? 650_000,
-          })),
+          .map((y) => {
+            const saved = store.deductions.find((d) => d.year === y);
+            return {
+              year: y,
+              profit: summarizeYear(store.transactions, y, store.assets, store.inventories).profit,
+              blueDeduction: saved?.blueDeduction ?? 650_000,
+              // その年に入力した給与所得と損益通算する
+              otherIncome: salaryIncomeAfterDeduction(saved?.salaryGross ?? 0, y),
+            };
+          }),
         year,
       ),
     [years, year, store.transactions, store.assets, store.inventories, store.deductions],
@@ -76,7 +104,7 @@ export default function SimulationPage() {
     <>
       <PageHeader
         title="所得税シミュレーション"
-        description="帳簿の事業所得に所得控除を加味して、所得税・復興特別所得税の納付見込みを試算します(概算)。確定申告書の「所得から差し引かれる金額」の下書きにもなります。"
+        description="帳簿の事業所得(勤め先の給与があればそれも)に所得控除を加味して、所得税・復興特別所得税の納付見込みを試算します(概算)。確定申告書の「所得から差し引かれる金額」の下書きにもなります。"
       />
       <div className="space-y-6">
         <div className="flex items-center gap-3">
@@ -132,8 +160,12 @@ function SimulationBody({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label={`事業所得(青色控除 ${yen(result.blueApplied)} 後)`}
-          value={yen(result.totalIncome)}
-          sub={`差引金額 ${yen(profit)} − 青色申告特別控除`}
+          value={yen(result.businessIncome)}
+          sub={
+            form.salaryGross > 0
+              ? `+ 給与所得 ${yen(result.salaryIncome)} = 合計所得 ${yen(result.totalIncome)}`
+              : `差引金額 ${yen(profit)} − 青色申告特別控除`
+          }
         />
         <StatCard label="課税所得(控除後・千円未満切捨て)" value={yen(result.taxable)} />
         <StatCard
@@ -145,7 +177,7 @@ function SimulationBody({
         <StatCard
           label={result.balanceDue >= 0 ? '納付見込み(源泉・予定納税差引後)' : '還付見込み'}
           value={yen(Math.abs(result.balanceDue))}
-          sub={`源泉徴収税額 ${yen(form.withholding)}${form.prepaidTax > 0 ? `・予定納税 ${yen(form.prepaidTax)}` : ''}`}
+          sub={`源泉徴収税額 ${yen(result.withholdingTotal)}${form.prepaidTax > 0 ? `・予定納税 ${yen(form.prepaidTax)}` : ''}`}
           tone={result.balanceDue >= 0 ? 'default' : 'positive'}
         />
       </div>
@@ -162,11 +194,68 @@ function SimulationBody({
               value={form.blueDeduction}
               onChange={(e) => set({ blueDeduction: Number(e.target.value) as DeductionEntry['blueDeduction'] })}
             >
-              <option value={650000}>65万円(複式簿記 + e-Tax申告等)</option>
-              <option value={550000}>55万円(複式簿記・書面提出)</option>
-              <option value={100000}>10万円(簡易簿記)</option>
+              {blueDeductionOptionsFor(year).map((amount) => (
+                <option key={amount} value={amount}>
+                  {blueDeductionLabel(amount, year)}
+                </option>
+              ))}
             </select>
+            {form.blueDeduction === 750_000 ? (
+              <p className="mt-1 text-[11px] leading-snug text-amber-700">
+                75万円は、仕訳帳・総勘定元帳を「優良な電子帳簿」の要件(訂正・削除の履歴が残るなど)を満たす
+                会計ソフトで保存している場合などに限られます。このアプリの帳簿はその要件を満たしていないため、
+                このアプリで記帳している場合は65万円(e-Tax提出)を選んでください。
+              </p>
+            ) : (
+              year >= BLUE_DEDUCTION_REFORM_YEAR && (
+                <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                  令和8年度改正により{BLUE_DEDUCTION_REFORM_YEAR}年分から、書面で提出すると10万円になります(55万円の枠は廃止)。
+                  65万円を受けるには申告書と決算書を期限内に e-Tax で提出してください。
+                </p>
+              )
+            )}
           </div>
+          <fieldset className="mb-4 rounded-lg border border-slate-200 p-3">
+            <legend className="px-1 text-xs font-medium text-slate-600">勤め先の給与(源泉徴収票から・なければ空欄)</legend>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="sim-salary-gross" className="mb-1 block text-xs font-medium text-slate-500">
+                  給与の収入金額(支払金額)
+                </label>
+                <input
+                  id="sim-salary-gross"
+                  type="number"
+                  min={0}
+                  className={`${input} w-full text-right`}
+                  value={form.salaryGross || ''}
+                  placeholder="0"
+                  onChange={(e) => set({ salaryGross: num(e.target.value) })}
+                />
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
+                  {form.salaryGross > 0
+                    ? `給与所得 ${yen(result.salaryIncome)}(給与所得控除後。事業の赤字はここから差し引く)`
+                    : '2か所以上から給与があれば合計額。給与所得控除は自動計算'}
+                </p>
+              </div>
+              <div>
+                <label htmlFor="sim-salary-withholding" className="mb-1 block text-xs font-medium text-slate-500">
+                  給与の源泉徴収税額
+                </label>
+                <input
+                  id="sim-salary-withholding"
+                  type="number"
+                  min={0}
+                  className={`${input} w-full text-right`}
+                  value={form.salaryWithholding || ''}
+                  placeholder="0"
+                  onChange={(e) => set({ salaryWithholding: num(e.target.value) })}
+                />
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-500">
+                  源泉徴収票の社会保険料・生命保険料などの控除額は、下の各控除欄に合算して入力
+                </p>
+              </div>
+            </div>
+          </fieldset>
           <div className="grid gap-3 sm:grid-cols-2">
             {FIELDS.map((f) => (
               <div key={f.key}>
@@ -186,7 +275,7 @@ function SimulationBody({
               </div>
             ))}
             <div>
-              <label htmlFor="sim-withholding" className="mb-1 block text-xs font-medium text-slate-500">源泉徴収税額</label>
+              <label htmlFor="sim-withholding" className="mb-1 block text-xs font-medium text-slate-500">報酬の源泉徴収税額</label>
               <input
                 id="sim-withholding"
                 type="number"
@@ -276,10 +365,29 @@ function SimulationBody({
                 <td className="py-1.5 pr-2 text-slate-600">青色申告特別控除</td>
                 <td className="tabular py-1.5 text-right">−{yen(result.blueApplied)}</td>
               </tr>
-              <tr className="border-b border-slate-200 font-medium">
-                <td className="py-1.5 pr-2">事業所得(合計所得金額)</td>
-                <td className="tabular py-1.5 text-right">{yen(result.totalIncome)}</td>
-              </tr>
+              {form.salaryGross > 0 ? (
+                <>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-600">事業所得</td>
+                    <td className="tabular py-1.5 text-right">{yen(result.businessIncome)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-100">
+                    <td className="py-1.5 pr-2 text-slate-600">
+                      給与所得(収入 {yen(form.salaryGross)} − 給与所得控除)
+                    </td>
+                    <td className="tabular py-1.5 text-right">{yen(result.salaryIncome)}</td>
+                  </tr>
+                  <tr className="border-b border-slate-200 font-medium">
+                    <td className="py-1.5 pr-2">合計所得金額</td>
+                    <td className="tabular py-1.5 text-right">{yen(result.totalIncome)}</td>
+                  </tr>
+                </>
+              ) : (
+                <tr className="border-b border-slate-200 font-medium">
+                  <td className="py-1.5 pr-2">事業所得(合計所得金額)</td>
+                  <td className="tabular py-1.5 text-right">{yen(result.totalIncome)}</td>
+                </tr>
+              )}
               {result.lossApplied > 0 && (
                 <>
                   <tr className="border-b border-slate-100">
@@ -311,8 +419,8 @@ function SimulationBody({
                 <td className="tabular py-1.5 text-right">{yen(result.reconstructionTax)}</td>
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="py-1.5 pr-2 text-slate-600">源泉徴収税額</td>
-                <td className="tabular py-1.5 text-right">−{yen(form.withholding)}</td>
+                <td className="py-1.5 pr-2 text-slate-600">源泉徴収税額{form.salaryWithholding > 0 ? '(報酬 + 給与)' : ''}</td>
+                <td className="tabular py-1.5 text-right">−{yen(result.withholdingTotal)}</td>
               </tr>
               {form.prepaidTax > 0 && (
                 <>
@@ -353,7 +461,10 @@ function SimulationBody({
               基礎控除は<strong>令和8年度税制改正に対応</strong>
               (2025年分は58万円+上乗せ、2026・2027年分は合計所得489万円以下104万円・655万円以下67万円・それ超62万円、2028年分以後は62万円〔132万円以下は99万円〕)。年分に応じて自動で切り替わります。
             </li>
-            <li>事業所得のみを前提とした概算です(給与所得・税額控除〔住宅ローン控除等〕は未対応)。</li>
+            <li>
+              事業所得と給与所得を前提とした概算です(給与所得は所得税法別表第五と同じ計算。所得金額調整控除・
+              その他の所得・税額控除〔住宅ローン控除等〕は未対応)。
+            </li>
             {result.lossToCarry > 0 && (
               <li className="font-medium text-amber-800">
                 翌年以後に繰り越せる純損失は{yen(result.lossToCarry)}です(青色申告のみ。損失の年の翌年から3年間)。

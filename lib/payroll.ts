@@ -1,6 +1,6 @@
 import { escapeFormulaCell } from './csv';
-import { basicDeduction, incomeTaxBase } from './incometax';
-import { salaryDeductionMinimumFor, salaryWithholdingFor } from './taxparams';
+import { basicDeduction, incomeTaxBase, salaryIncomeAfterDeduction } from './incometax';
+import { salaryWithholdingFor } from './taxparams';
 import { PayrollEntry, Transaction, YearEndAdjustment } from './types';
 
 /**
@@ -91,23 +91,8 @@ export function buildPayrollTransactions(
 
 // ── 年末調整(源泉徴収簿) ──────────────────────────────
 
-/**
- * 給与所得控除後の給与等の金額(速算式による概算)。
- * 最低保障額は年分で変わる(2025年分65万円・2026/2027年分74万円・2028年分以後69万円。
- * lib/taxparams.ts)。実際の年末調整では収入660万円未満は所得税法別表第五
- * (4,000円刻みの表)を使うため、数百円ずれることがある。
- */
-export function salaryIncomeAfterDeduction(gross: number, year: number): number {
-  if (gross <= 0) return 0;
-  const floor = salaryDeductionMinimumFor(year);
-  let deduction: number;
-  if (gross <= 1_800_000) deduction = Math.floor(gross * 0.4) - 100_000;
-  else if (gross <= 3_600_000) deduction = Math.floor(gross * 0.3) + 80_000;
-  else if (gross <= 6_600_000) deduction = Math.floor(gross * 0.2) + 440_000;
-  else if (gross <= 8_500_000) deduction = Math.floor(gross * 0.1) + 1_100_000;
-  else deduction = 1_950_000;
-  return Math.max(0, gross - Math.max(floor, deduction));
-}
+/** 給与所得控除後の給与等の金額(所得税法別表第五と同じ結果。所得税シミュレーションと共用) */
+export { salaryIncomeAfterDeduction };
 
 /** 年末調整の計算結果(源泉徴収簿の右側の欄) */
 export interface YearEndResult {
@@ -190,9 +175,6 @@ export function withholdingLedgerCsv(
 ): string {
   const lines: string[] = [];
   lines.push(`"${year}年分 給与所得に対する源泉徴収簿(申告スナップ)"`);
-  lines.push(
-    '※速算式による計算のため、別表第五(660万円未満の所得金額の表)とは数百円ずれることがあります',
-  );
   const inYear = payrolls
     .filter((p) => p.date.startsWith(`${year}-`))
     .sort((a, b) => a.date.localeCompare(b.date));
