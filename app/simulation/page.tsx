@@ -11,6 +11,8 @@ import {
   BLUE_DEDUCTION_REFORM_YEAR,
   BlueDeductionAmount,
   blueDeductionOptionsFor,
+  incomeSurtaxFor,
+  incomeSurtaxRateLabel,
 } from '@/lib/taxparams';
 import { DeductionEntry, emptyDeduction } from '@/lib/types';
 
@@ -104,7 +106,7 @@ export default function SimulationPage() {
     <>
       <PageHeader
         title="所得税シミュレーション"
-        description="帳簿の事業所得(勤め先の給与があればそれも)に所得控除を加味して、所得税・復興特別所得税の納付見込みを試算します(概算)。確定申告書の「所得から差し引かれる金額」の下書きにもなります。"
+        description={`帳簿の事業所得(勤め先の給与があればそれも)に所得控除を加味して、所得税・${incomeSurtaxFor(year).name}の納付見込みを試算します(概算)。確定申告書の「所得から差し引かれる金額」の下書きにもなります。`}
       />
       <div className="space-y-6">
         <div className="flex items-center gap-3">
@@ -154,6 +156,8 @@ function SimulationBody({
   };
 
   const result = useMemo(() => simulateIncomeTax(profit, form), [profit, form]);
+  // 所得税額への上乗せ分の名称(2027年分から防衛特別所得税が加わる)
+  const surtax = incomeSurtaxFor(year);
 
   return (
     <>
@@ -169,9 +173,9 @@ function SimulationBody({
         />
         <StatCard label="課税所得(控除後・千円未満切捨て)" value={yen(result.taxable)} />
         <StatCard
-          label="所得税+復興特別所得税"
+          label={`所得税+${surtax.name}`}
           value={yen(result.totalTax)}
-          sub={`所得税 ${yen(result.incomeTax)} + 復興税 ${yen(result.reconstructionTax)}`}
+          sub={`所得税 ${yen(result.incomeTax)} + ${surtax.shortName} ${yen(result.surtax)}`}
           tone="primary"
         />
         <StatCard
@@ -415,8 +419,8 @@ function SimulationBody({
                 <td className="tabular py-1.5 text-right">{yen(result.incomeTax)}</td>
               </tr>
               <tr className="border-b border-slate-100">
-                <td className="py-1.5 pr-2 text-slate-600">復興特別所得税(2.1%)</td>
-                <td className="tabular py-1.5 text-right">{yen(result.reconstructionTax)}</td>
+                <td className="py-1.5 pr-2 text-slate-600">{surtax.name}({incomeSurtaxRateLabel(year)})</td>
+                <td className="tabular py-1.5 text-right">{yen(result.surtax)}</td>
               </tr>
               <tr className="border-b border-slate-100">
                 <td className="py-1.5 pr-2 text-slate-600">源泉徴収税額{form.salaryWithholding > 0 ? '(報酬 + 給与)' : ''}</td>

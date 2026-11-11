@@ -1,9 +1,9 @@
 import {
   basicDeductionTableFor,
   BUSINESS_TAX,
+  incomeSurtaxFor,
   incomeTaxBracketsFor,
   normalizeBlueDeduction,
-  RECONSTRUCTION_TAX,
   RESIDENT_BASIC_DEDUCTION,
   RESIDENT_TAX,
   salaryIncomeTableFor,
@@ -16,7 +16,7 @@ import { DeductionEntry } from './types';
  * 税率・控除額などの年度パラメータは lib/taxparams.ts に集約している。
  */
 
-/** 課税所得(1,000円未満切り捨て済み)に対する所得税額(復興税を含まない) */
+/** 課税所得(1,000円未満切り捨て済み)に対する所得税額(復興特別所得税・防衛特別所得税を含まない) */
 export function incomeTaxBase(taxable: number, year = new Date().getFullYear()): number {
   if (taxable <= 0) return 0;
   const b = incomeTaxBracketsFor(year).find((x) => taxable <= x.limit)!;
@@ -91,11 +91,14 @@ export interface IncomeTaxResult {
   totalDeductions: number;
   /** 課税所得(1,000円未満切り捨て) */
   taxable: number;
-  /** 所得税(復興税前) */
+  /** 所得税(上乗せ分を足す前) */
   incomeTax: number;
-  /** 復興特別所得税(2.1%) */
-  reconstructionTax: number;
-  /** 所得税及び復興特別所得税の額 */
+  /**
+   * 所得税額への上乗せ分(1円未満切り捨て)。2026年分までは復興特別所得税(2.1%)、
+   * 2027年分からは防衛特別所得税(1%)と復興特別所得税(1.1%)の合計。名称は incomeSurtaxFor(year)
+   */
+  surtax: number;
+  /** 所得税と上乗せ分の合計(所得税及び復興特別所得税の額 など) */
   totalTax: number;
   /** 申告納税額 = 税額 − 源泉徴収税額(プラス=納付・100円未満切り捨て、マイナス=還付) */
   filingTax: number;
@@ -158,11 +161,8 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
   const totalDeductions = breakdown.reduce((s, l) => s + l.amount, 0);
   const taxable = Math.floor(Math.max(0, incomeAfterLoss - totalDeductions) / 1000) * 1000;
   const incomeTax = incomeTaxBase(taxable, d.year);
-  const reconstructionTax =
-    d.year >= RECONSTRUCTION_TAX.fromYear && d.year <= RECONSTRUCTION_TAX.toYear
-      ? Math.floor(incomeTax * RECONSTRUCTION_TAX.rate)
-      : 0;
-  const totalTax = incomeTax + reconstructionTax;
+  const surtax = Math.floor((incomeTax * incomeSurtaxFor(d.year).permille) / 1000);
+  const totalTax = incomeTax + surtax;
 
   // 申告納税額(源泉徴収税額を引いた額。納付は100円未満切捨て)から予定納税額を引いて第3期分にする
   const withholdingTotal = d.withholding + Math.max(0, d.salaryWithholding ?? 0);
@@ -199,7 +199,7 @@ export function simulateIncomeTax(profit: number, d: DeductionEntry): IncomeTaxR
     totalDeductions,
     taxable,
     incomeTax,
-    reconstructionTax,
+    surtax,
     totalTax,
     filingTax,
     withholdingTotal,

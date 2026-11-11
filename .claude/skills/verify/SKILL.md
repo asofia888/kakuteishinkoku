@@ -53,8 +53,13 @@ cabextract -e SJIS -d xsd e-tax19.CAB
 ETAX_XSD_DIR=<ツリーのルート> ETAX_XMLLINT=<xmllintのパス> npx vitest run lib/etax.test.ts
 ```
 
-- 検証対象スキーマ: `shotoku/RKO0010-250.xsd`(手続v25.0.0)。年分仕様の改定時は
-  lib/etax.ts の ETAX_VERSIONS を上げて再検証する
+- 検証対象スキーマは年分ごと(lib/etax.ts の `ETAX_SPECS[年].xsd`。令和7年分は
+  `shotoku/RKO0010-250.xsd` = 手続v25.0.0)。テストは ETAX_XSD_DIR にその年分の XSD が
+  あるときだけ動き、なければ skipped になる(通ったつもりにならないよう件数を見る)
+- 新しい年分に対応するとき: 仕様書で前の版との差分を確認 → `ETAX_SPECS` に年分を足す
+  (確定版が出るまでは `draft` を付けて画面からの出力を止める)→ 確定版の XSD で検証 →
+  `draft` を外す。令和8年分(手続v26.0.0・帳票 KOA210 v12.0)は確定版待ち
+  (2026年11月25日公開予定。`RKO0010-260.xsd` で検証する)
 - 文字項目には maxLength がある(資産名16字・償却方法10字・摘要15字など)。
   超過は builder 側で切り詰めている
 

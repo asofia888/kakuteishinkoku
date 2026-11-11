@@ -24,7 +24,8 @@ export const SALARY_TABLE_LABELS: Record<PayrollEntry['table'], string> = {
  * - 甲欄: 月額ライン未満 → 0円。以上は税額表参照
  * - 乙欄: 月額ライン未満 → 3.063%。以上は税額表参照
  * - 丙欄: 日額ライン未満 → 0円。以上は税額表参照
- * (ラインは2025年分まで 88,000円/9,300円、2026年分から 105,000円/9,800円)
+ * (ラインは年分ごとに変わる: 2025年分まで 88,000円/9,300円、2026年分 105,000円/9,800円、
+ *  2027年分から 111,000円/10,000円。定義は taxparams.ts の salaryWithholdingFor)
  */
 export function salaryWithholding(
   taxable: number,
@@ -144,7 +145,8 @@ export function calcYearEndAdjustment(
     socialTotal + adj.insuranceDeductions + adj.personalDeductions + basic;
   const taxable = Math.floor(Math.max(0, salaryIncome - totalDeductions) / 1000) * 1000;
   const incomeTax = incomeTaxBase(taxable, year);
-  // 年調年税額 = 算出所得税額 × 102.1%(復興特別所得税込み)→ 100円未満切捨て
+  // 年調年税額 = 算出所得税額 × 102.1% → 100円未満切捨て。上乗せの 2.1% は、2026年分までは
+  // 復興特別所得税、2027年分からは防衛特別所得税 1% + 復興特別所得税 1.1%(合計は同じ)
   const annualTax = Math.floor((incomeTax * 1021) / 100_000) * 100;
   return {
     year,
@@ -210,7 +212,7 @@ export function withholdingLedgerCsv(
       r.balance >= 0 ? `不足額(徴収する額),${r.balance}` : `超過額(還付する額),${-r.balance}`,
     );
   }
-  return '﻿' + lines.join('\r\n');
+  return '\ufeff' + lines.join('\r\n');
 }
 
 /** 賃金台帳CSV(従業員別・支払日順)。労働日数・時間は別途記録が必要 */

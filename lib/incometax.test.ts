@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { basicDeduction, incomeTaxBase, simulateIncomeTax, suggestedLossCarryforward } from './incometax';
-import { blueDeductionOptionsFor, normalizeBlueDeduction } from './taxparams';
+import {
+  blueDeductionOptionsFor,
+  incomeSurtaxFor,
+  incomeSurtaxRateLabel,
+  normalizeBlueDeduction,
+} from './taxparams';
 import { DeductionEntry, emptyDeduction } from './types';
 
 function ded(over: Partial<DeductionEntry>): DeductionEntry {
@@ -76,7 +81,7 @@ describe('simulateIncomeTax', () => {
     expect(r.totalDeductions).toBe(1_840_000);
     expect(r.taxable).toBe(2_510_000);
     expect(r.incomeTax).toBe(153_500); // 2,510,000×10% − 97,500
-    expect(r.reconstructionTax).toBe(3_223); // 153,500×2.1% = 3,223.5 → 切捨て
+    expect(r.surtax).toBe(3_223); // 153,500×2.1% = 3,223.5 → 切捨て
     expect(r.totalTax).toBe(156_723);
     // 源泉0 → 納付は100円未満切捨て
     expect(r.balanceDue).toBe(156_700);
@@ -133,11 +138,40 @@ describe('simulateIncomeTax', () => {
     expect(eq.amount).toBe(50_000);
   });
 
-  it('復興特別所得税は2037年分まで(2038年分以降は0)', () => {
-    const r2037 = simulateIncomeTax(5_000_000, ded({ year: 2037 }));
-    const r2038 = simulateIncomeTax(5_000_000, ded({ year: 2038 }));
-    expect(r2037.reconstructionTax).toBeGreaterThan(0);
-    expect(r2038.reconstructionTax).toBe(0);
+  it('所得税額への上乗せ: 2026年分までは復興特別所得税2.1%、2027年分からは防衛特別所得税と合わせて2.1%', () => {
+    expect(incomeSurtaxFor(2026)).toMatchObject({ permille: 21, name: '復興特別所得税', totalName: '所得税及び復興特別所得税' });
+    expect(incomeSurtaxFor(2027)).toMatchObject({
+      permille: 21,
+      name: '防衛特別所得税及び復興特別所得税',
+      totalName: '所得税、防衛特別所得税及び復興特別所得税',
+    });
+    expect(incomeSurtaxRateLabel(2027)).toBe('2.1%');
+    // 基礎控除の表が同じ2028年分以後で比べる(2038年分は改正前なら復興特別所得税が終わっていた年)
+    for (const year of [2028, 2037, 2038, 2047]) {
+      const r = simulateIncomeTax(5_000_000, ded({ year }));
+      expect(r.surtax).toBe(Math.floor((r.incomeTax * 21) / 1000));
+      expect(r.totalTax).toBe(r.incomeTax + r.surtax);
+    }
+  });
+
+  it('復興特別所得税は2047年分まで(10年延長)。2048年分以後は防衛特別所得税1%だけが残る', () => {
+    const r2047 = simulateIncomeTax(5_000_000, ded({ year: 2047 }));
+    const r2048 = simulateIncomeTax(5_000_000, ded({ year: 2048 }));
+    expect(r2048.incomeTax).toBe(r2047.incomeTax);
+    expect(r2047.surtax).toBe(Math.floor((r2047.incomeTax * 21) / 1000));
+    expect(r2048.surtax).toBe(Math.floor(r2048.incomeTax / 100));
+    expect(incomeSurtaxFor(2048)).toMatchObject({ permille: 10, name: '防衛特別所得税' });
+    expect(incomeSurtaxRateLabel(2048)).toBe('1%');
+    // 復興特別所得税が始まる前(2012年分以前)は上乗せなし
+    expect(incomeSurtaxFor(2012).permille).toBe(0);
+  });
+
+  it('上乗せ分は1円未満切り捨て(整数で計算し、浮動小数点の誤差を出さない)', () => {
+    // 課税所得 1,000円 → 所得税 50円 → 2.1% = 1.05円 → 1円
+    const r = simulateIncomeTax(1_000 + 650_000 + 1_040_000, ded({ year: 2027 }));
+    expect(r.taxable).toBe(1_000);
+    expect(r.incomeTax).toBe(50);
+    expect(r.surtax).toBe(1);
   });
 
   it('個人事業税は青色控除前の所得から事業主控除290万円を引いて5%', () => {

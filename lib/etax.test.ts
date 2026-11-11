@@ -1,11 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildKessanshoXtx,
+  ETAX_SPECS,
+  ETAX_SUPPORTED_YEARS,
   etaxInputProblems,
+  etaxSpecFor,
   etaxText,
   etaxYearProblem,
   jpEra,
@@ -26,11 +29,11 @@ const issuer = {
   zeimushoName: '新宿',
 };
 
-function fixture(): KessanshoInput {
+function fixture(year = 2025): KessanshoInput {
   return {
-    year: 2025, // 令和7年分
+    year, // 既定は令和7年分
     issuer,
-    createdDate: '2026-03-10',
+    createdDate: `${year + 1}-03-10`,
     pl: {
       sales: 5_068_000,
       inventoryOpening: 0,
@@ -64,7 +67,7 @@ function fixture(): KessanshoInput {
     depreciation: [
       {
         name: 'ノートPC',
-        acquired: '2025-07',
+        acquired: `${year}-07`,
         cost: 240_000,
         guarantee: null,
         base: 240_000,
@@ -94,8 +97,8 @@ function fixture(): KessanshoInput {
 }
 
 /** 地代家賃の内訳あり・半角カナや絵文字を含む入力(スキーマで使えない文字の補正を確かめる) */
-function rentFixture(): KessanshoInput {
-  const d = fixture();
+function rentFixture(year = 2025): KessanshoInput {
+  const d = fixture(year);
   d.issuer = { ...d.issuer, yago: 'ﾔﾏﾀﾞ ﾃﾞｻﾞｲﾝ🎨' };
   d.depreciation[0].name = 'ﾉｰﾄPC ㈱ﾃｽﾄ';
   d.rent = [
@@ -107,8 +110,8 @@ function rentFixture(): KessanshoInput {
 }
 
 /** 借入金ありの貸借対照表(期首200万・期末150万。借入れた資金は預金にある) */
-function loanFixture(): KessanshoInput {
-  const d = fixture();
+function loanFixture(year = 2025): KessanshoInput {
+  const d = fixture(year);
   d.bs.opening = { ...d.bs.opening, loan: 2_000_000, bank: d.bs.opening.bank + 2_000_000 };
   d.bs.closing = { ...d.bs.closing, loan: 1_500_000, bank: d.bs.closing.bank + 1_500_000 };
   return d;
@@ -232,35 +235,116 @@ describe('buildKessanshoXtx: e-Tax申告等データの生成', () => {
     expect(etaxInputProblems({ ...issuer, etaxId: '' })).toEqual([]);
   });
 
-  // 国税庁公式XSDでの検証(ローカル環境のみ:
-  //   ETAX_XSD_DIR=<XSDツリー> ETAX_XMLLINT=<xmllintパス> npx vitest run lib/etax.test.ts)
-  it.runIf(process.env.ETAX_XSD_DIR && process.env.ETAX_XMLLINT)(
-    '公式XSD(RKO0010-250)に対して valid である(借入金・地代家賃の内訳・半角カナの補正を含む)',
-    () => {
-      const dir = mkdtempSync(join(tmpdir(), 'xtx-'));
-      for (const [name, content] of [
-        ['test.xtx', xml],
-        ['loan.xtx', buildKessanshoXtx(loanFixture())],
-        ['rent.xtx', buildKessanshoXtx(rentFixture())],
-      ]) {
-        const file = join(dir, name);
-        writeFileSync(file, content, 'utf-8');
-        const out = execFileSync(
-          process.env.ETAX_XMLLINT!,
-          ['--noout', '--schema', join(process.env.ETAX_XSD_DIR!, 'shotoku/RKO0010-250.xsd'), file],
-          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
-        );
-        expect(out).toBe(''); // validates はstderr側。エラーがあれば execFileSync が throw する
-      }
-    },
-  );
+});
+
+describe('buildKessanshoXtx: 令和8年分(手続 v26.0.0・帳票 KOA210 v12.0。ドラフト版の仕様)', () => {
+  const xml = buildKessanshoXtx(fixture(2026));
+  const page = (x: string, n: number) => x.slice(x.indexOf(`<KOA210-${n}>`), x.indexOf(`</KOA210-${n}>`));
+
+  it('手続・帳票の版と年分が令和8年分になる', () => {
+    expect(xml).toContain('<RKO0010 id="RKO0010" VR="26.0.0">');
+    expect(xml).toContain('<KOA210 VR="12.0"');
+    expect(xml).toContain('<NENBUN ID="NENBUN"><gen:era>5</gen:era><gen:yy>8</gen:yy></NENBUN>');
+    expect(xml).toContain('<AMG00010><gen:era>5</gen:era><gen:yy>8</gen:yy><gen:mm>12</gen:mm><gen:dd>31</gen:dd></AMG00010>');
+  });
+
+  it('2ページ目から年分・氏名の欄がなくなり、月別売上から始まる', () => {
+    expect(xml).not.toContain('AMF00538');
+    expect(xml).not.toContain('AMF00540');
+    expect(page(xml, 2)).toMatch(/^<KOA210-2>\n<AMF00580>/);
+  });
+
+  it('3ページ目の先頭に年分・氏名(IDREF 参照)を置き、そのあとに減価償却費の計算が続く', () => {
+    expect(page(xml, 3)).toMatch(
+      /^<KOA210-3>\n<AMK00000 IDREF="NENBUN"\/><AML00000><AML00010 IDREF="NOZEISHA_NM_KN"\/><AML00020 IDREF="NOZEISHA_NM"\/><\/AML00000>\n<AMF01590>/,
+    );
+    // フリガナが未入力なら、参照先のない欄は出さない
+    const d = fixture(2026);
+    d.issuer = { ...issuer, nameKana: '' };
+    const noKana = buildKessanshoXtx(d);
+    expect(noKana).not.toContain('NOZEISHA_NM_KN');
+    expect(noKana).toContain('<AML00000><AML00020 IDREF="NOZEISHA_NM"/></AML00000>');
+  });
+
+  it('減価償却がなければ3ページ目ごと出さない(年分・氏名だけのページは作らない)', () => {
+    const d = fixture(2026);
+    d.depreciation = [];
+    const x = buildKessanshoXtx(d);
+    expect(x).not.toContain('<KOA210-3>');
+    expect(x).not.toContain('AMK00000');
+  });
+
+  it('1・4ページ目と2ページ目の内訳は令和7年分と同じ並び(版と年分の違いだけ)', () => {
+    const same = (x: string) =>
+      x
+        .replace(/VR="[\d.]+"/g, 'VR=""')
+        .replace(/<gen:yy>\d+<\/gen:yy>/g, '<gen:yy/>')
+        .replace(/sakuseiDay="[^"]+"/, '');
+    const r7 = same(buildKessanshoXtx(rentFixture()));
+    const r8 = same(buildKessanshoXtx(rentFixture(2026)));
+    for (const n of [1, 4]) expect(page(r8, n)).toBe(page(r7, n));
+    expect(page(r8, 2)).toBe(page(r7, 2).replace(/<AMF00538.*<\/AMF00540>\n/, ''));
+    expect(page(r8, 3).replace(/<AMK00000.*<\/AML00000>\n/, '')).toBe(page(r7, 3));
+  });
+
+  it('令和7年分の出力は変わらない(年分・氏名は2ページ目のまま)', () => {
+    const r7 = buildKessanshoXtx(fixture());
+    expect(page(r7, 2)).toMatch(
+      /^<KOA210-2>\n<AMF00538 IDREF="NENBUN"\/><AMF00540><AMF00550 IDREF="NOZEISHA_NM_KN"\/><AMF00560 IDREF="NOZEISHA_NM"\/><\/AMF00540>\n<AMF00580>/,
+    );
+    expect(page(r7, 3)).toMatch(/^<KOA210-3>\n<AMF01590>/);
+    expect(r7).not.toContain('AMK00000');
+  });
+
+  it('仕様のない年分は組み立てない(別の年分の版で出力しない)', () => {
+    expect(() => buildKessanshoXtx(fixture(2024))).toThrow(/令和6年分.*対応していません/);
+    expect(() => buildKessanshoXtx(fixture(2027))).toThrow(/令和9年分.*まだ対応していません/);
+  });
+});
+
+// 国税庁公式XSDでの検証(ローカル環境のみ:
+//   ETAX_XSD_DIR=<XSDツリー> ETAX_XMLLINT=<xmllintパス> npx vitest run lib/etax.test.ts)
+// 年分ごとに、その年分の XSD が ETAX_XSD_DIR にあるときだけ動く(なければ skipped と表示される)
+describe('公式XSDでの検証', () => {
+  const xsdDir = process.env.ETAX_XSD_DIR;
+  const xmllint = process.env.ETAX_XMLLINT;
+  for (const [y, spec] of Object.entries(ETAX_SPECS)) {
+    const year = Number(y);
+    const schema = xsdDir ? join(xsdDir, spec.xsd) : '';
+    it.runIf(xmllint && schema && existsSync(schema))(
+      `令和${year - 2018}年分: ${spec.xsd} に対して valid である(借入金・地代家賃の内訳・半角カナの補正を含む)`,
+      () => {
+        const dir = mkdtempSync(join(tmpdir(), 'xtx-'));
+        for (const [name, content] of [
+          ['test.xtx', buildKessanshoXtx(fixture(year))],
+          ['loan.xtx', buildKessanshoXtx(loanFixture(year))],
+          ['rent.xtx', buildKessanshoXtx(rentFixture(year))],
+        ]) {
+          const file = join(dir, name);
+          writeFileSync(file, content, 'utf-8');
+          const out = execFileSync(xmllint!, ['--noout', '--schema', schema, file], {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          expect(out).toBe(''); // validates はstderr側。エラーがあれば execFileSync が throw する
+        }
+      },
+    );
+  }
 });
 
 describe('etaxYearProblem: 対応年分のガード', () => {
   it('令和7年分(2025年分)だけ出力でき、それ以外の年分は理由を返す', () => {
+    expect(ETAX_SUPPORTED_YEARS).toEqual([2025]);
     expect(etaxYearProblem(2025)).toBeNull();
-    // 令和8年分を令和7年分の版(RKO0010 v25.0.0)で出力しない
-    expect(etaxYearProblem(2026)).toMatch(/令和8年分.*まだ対応していません/);
+    expect(etaxSpecFor(2025)).toMatchObject({ procedure: '25.0.0', koa210: '11.0' });
     expect(etaxYearProblem(2024)).toMatch(/令和6年分.*対応していません/);
+    expect(etaxYearProblem(2027)).toMatch(/令和9年分.*まだ対応していません/);
+  });
+
+  it('令和8年分は確定版の仕様が出るまで出力させず、公開予定を案内する', () => {
+    // ドラフト版の様式(v12.0)で組み立てはできるが、公式XSDで検証できるまで画面からは出さない
+    expect(etaxYearProblem(2026)).toMatch(/令和8年分.*まだ出力できません.*ドラフト版.*2026年11月25日.*2027年1月4日/);
+    expect(etaxSpecFor(2026)).toBeNull();
   });
 });

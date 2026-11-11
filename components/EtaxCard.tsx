@@ -5,7 +5,7 @@ import { Alert, btn, Card, input } from '@/components/ui';
 import { summarizeYear } from '@/lib/aggregate';
 import { depreciationRowsForYear } from '@/lib/assets';
 import { downloadText } from '@/lib/csv';
-import { buildKessanshoXtx, EtaxPayrollRow, etaxInputProblems, etaxYearProblem } from '@/lib/etax';
+import { buildKessanshoXtx, EtaxPayrollRow, etaxInputProblems, etaxSpecFor, etaxYearProblem } from '@/lib/etax';
 import { today } from '@/lib/format';
 import { IncomeTaxResult } from '@/lib/incometax';
 import { kessanshoExpenseValues } from '@/lib/kessansho';
@@ -60,6 +60,8 @@ export function EtaxCard({
   };
   // 対応していない年分は、入力が揃っていても出力しない(旧仕様のデータになるため)
   const yearProblem = etaxYearProblem(year);
+  // 手続・帳票の版は年分ごとに違う(出力できない年分は null)
+  const spec = etaxSpecFor(year);
   const problems = etaxInputProblems(draft);
 
   const download = () => {
@@ -193,7 +195,7 @@ export function EtaxCard({
       <p className="mb-3 text-xs leading-relaxed text-slate-500">
         この年分の<strong>青色申告決算書(一般用)</strong>を、e-Taxソフト(インストール版)の
         「組み込み」で読み込める<strong>申告等データ(.xtx)</strong>として出力します
-        (手続「所得税及び復興特別所得税申告」v25.0.0・帳票KOA210 v11.0)。
+        {spec && `(手続「所得税及び復興特別所得税申告」v${spec.procedure}・帳票KOA210 v${spec.koa210})`}。
         読み込み後、申告書第一表・第二表はe-Taxソフトまたは作成コーナーで作成してください。
       </p>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -246,7 +248,8 @@ export function EtaxCard({
       )}
       <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-relaxed text-slate-500">
         <li>
-          出力データは国税庁公開のXML構造設計書・XMLスキーマ(RKO0010 v25.0.0)に適合することを確認しています。
+          出力データは国税庁公開のXML構造設計書・XMLスキーマ
+          {spec ? `(RKO0010 v${spec.procedure})` : '(手続・帳票の版は年分ごとに異なります)'}に適合することを確認しています。
           e-Taxソフト実機での最終確認は、読み込み後の帳票表示で必ず行ってください。
         </li>
         <li>e-Taxソフト(WEB版・SP版)は.xtxの組み込みに対応していません。インストール版をご利用ください。</li>

@@ -239,7 +239,9 @@ export default function PayrollPage() {
           )}
           <p className="mt-3 text-xs leading-relaxed text-slate-500">
             仕訳は「(借)給料賃金 総支給額 /(貸)普通預金 手取り +(貸)預り金 源泉・社会保険料等」で自動起票されます(取引一覧にも表示)。
-            源泉徴収税額の判定は<strong>社会保険料等控除後の給与</strong>と<strong>支払年分の税額表</strong>で行います(2026年分から判定ラインが引き上げ)。
+            源泉徴収税額の判定は<strong>社会保険料等控除後の給与</strong>と<strong>支払年分の税額表</strong>で行います
+            {`(${payYear}年分の判定ライン: 甲欄・乙欄 月${lines.monthlyZeroUnder.toLocaleString()}円 / 丙欄 日額${lines.dailyZeroUnder.toLocaleString()}円。2026年分・2027年分と続けて引き上げ)。`}
+            {payYear >= 2027 && '2027年分からの税額表の税額には、防衛特別所得税(1%)と復興特別所得税(1.1%)が含まれます(合計2.1%は従来と同じ)。'}
             人を雇うと「給与支払事務所等の開設届出書」の提出、賃金台帳の作成(労働日数・時間も記録)、
             労災保険の加入などの義務が生じます。源泉0円でも源泉徴収票の交付は必要です。
           </p>

@@ -16,10 +16,19 @@ describe('salaryWithholding: 源泉徴収の簡易判定(社会保険料等控�
     expect(salaryWithholding(88_000, 'kou', 2025)).toBeNull(); // ちょうど88,000円は課税
   });
 
-  it('2026年分から: 甲欄の0円ラインは105,000円未満に引き上げ(令和8年分税額表)', () => {
+  it('2026年分: 甲欄の0円ラインは105,000円未満に引き上げ(令和8年分税額表)', () => {
     expect(salaryWithholding(104_999, 'kou', 2026)).toBe(0);
     expect(salaryWithholding(105_000, 'kou', 2026)).toBeNull();
     expect(salaryWithholding(90_000, 'kou', 2026)).toBe(0); // 2025年ならnullだった帯
+  });
+
+  it('2027年分から: 甲欄の0円ラインは111,000円未満に引き上げ(令和9年分税額表・告示第127号)', () => {
+    expect(salaryWithholding(110_999, 'kou', 2027)).toBe(0);
+    expect(salaryWithholding(111_000, 'kou', 2027)).toBeNull(); // 111,000円以上113,000円未満は140円(税額表)
+    expect(salaryWithholding(108_000, 'kou', 2027)).toBe(0); // 2026年ならnullだった帯
+    expect(salaryWithholding(108_000, 'kou', 2026)).toBeNull();
+    // 翌年分の税額表が告示されるまでは、直近の表で判定する
+    expect(salaryWithholding(110_999, 'kou', 2028)).toBe(0);
   });
 
   it('乙欄: ライン未満は3.063%(切り捨て)、以上はnull(年分でラインが変わる)', () => {
@@ -27,14 +36,19 @@ describe('salaryWithholding: 源泉徴収の簡易判定(社会保険料等控�
     expect(salaryWithholding(88_000, 'otsu', 2025)).toBeNull();
     expect(salaryWithholding(100_000, 'otsu', 2026)).toBe(Math.floor(100_000 * 0.03063)); // 3,063
     expect(salaryWithholding(105_000, 'otsu', 2026)).toBeNull();
+    // 2027年分: 防衛特別所得税1% + 復興特別所得税1.1% でも合計は 3.063% のまま
+    expect(salaryWithholding(110_000, 'otsu', 2027)).toBe(3_369); // 110,000 × 3.063% = 3,369.3
+    expect(salaryWithholding(111_000, 'otsu', 2027)).toBeNull();
   });
 
-  it('丙欄: 日額ライン未満は0円、以上はnull(2025年: 9,300円 / 2026年: 9,800円)', () => {
+  it('丙欄: 日額ライン未満は0円、以上はnull(2025年: 9,300円 / 2026年: 9,800円 / 2027年: 10,000円)', () => {
     expect(salaryWithholding(9_299, 'hei', 2025)).toBe(0);
     expect(salaryWithholding(9_300, 'hei', 2025)).toBeNull();
     expect(salaryWithholding(9_799, 'hei', 2026)).toBe(0);
     expect(salaryWithholding(9_800, 'hei', 2026)).toBeNull();
     expect(salaryWithholding(12_000, 'hei', 2026)).toBeNull();
+    expect(salaryWithholding(9_999, 'hei', 2027)).toBe(0);
+    expect(salaryWithholding(10_000, 'hei', 2027)).toBeNull(); // 10,000円以上10,100円未満は1円(税額表)
   });
 });
 

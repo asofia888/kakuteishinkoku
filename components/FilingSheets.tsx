@@ -5,7 +5,7 @@ import { summarizeYear } from '@/lib/aggregate';
 import { IncomeTaxResult } from '@/lib/incometax';
 import { KESSANSHO_BLANK_NOS, KessanshoExpenseValues } from '@/lib/kessansho';
 import { BalanceSheet } from '@/lib/ledger';
-import { BLUE_DEDUCTION_REFORM_YEAR } from '@/lib/taxparams';
+import { BLUE_DEDUCTION_REFORM_YEAR, incomeSurtaxFor, incomeSurtaxRateLabel } from '@/lib/taxparams';
 import { DeductionEntry, IssuerProfile } from '@/lib/types';
 
 // ── 様式イメージ(印刷用)──
@@ -123,6 +123,8 @@ export function FilingSheets({
   tax: IncomeTaxResult;
   deduction: DeductionEntry;
 }) {
+  // 所得税額への上乗せ分の名称(2027年分から防衛特別所得税が加わる)
+  const surtax = incomeSurtaxFor(year);
   // 損益計算書の経費欄: 固定欄(⑧〜㉔)・空欄科目(㉕〜㉚)・雑費㉛を共通定義表から組み立てる
   const fixedRows = expenses.fixed.filter((e) => e.no !== '㉛');
   const miscRow = expenses.fixed.find((e) => e.no === '㉛');
@@ -304,8 +306,8 @@ export function FilingSheets({
                 <FormSection label="税金の計算" />
                 <FormRow no="㉚" label="課税される所得金額(千円未満切捨て)" value={tax.taxable} />
                 <FormRow no="㉛" label="上の㉚に対する税額(速算表)" value={tax.incomeTax} />
-                <FormRow label="復興特別所得税額(㉛ × 2.1%)" value={tax.reconstructionTax} />
-                <FormRow label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
+                <FormRow label={`${surtax.name}額(㉛ × ${incomeSurtaxRateLabel(year)})`} value={tax.surtax} />
+                <FormRow label={`${surtax.totalName}の額`} value={tax.totalTax} strong />
                 <FormRow label="源泉徴収税額" value={tax.withholdingTotal || null} />
                 <FormRow label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
                 <FormRow label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />

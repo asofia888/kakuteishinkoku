@@ -1,7 +1,8 @@
 /**
  * 税制パラメータの一覧(年度で変わるものを1箇所に集約)。
  * 毎年の税制改正はこのファイルを更新すれば全機能に反映される。
- * 最終確認: 令和8年度税制改正まで反映(2026年9月時点)。
+ * 最終確認: 令和8年度税制改正まで反映(2026年11月時点。令和9年分の源泉徴収税額表・
+ * 防衛特別所得税を含む)。
  */
 
 // ── 所得税 ──────────────────────────────────────────────
@@ -138,8 +139,53 @@ export function salaryIncomeTableFor(year: number): SalaryIncomeTable {
   return { minimum, exactBelow: 0, bands: [], estimated: true };
 }
 
-/** 復興特別所得税(所得税額に対する上乗せ)。2013〜2037年分 */
-export const RECONSTRUCTION_TAX = { rate: 0.021, fromYear: 2013, toYear: 2037 };
+/** 所得税額(基準所得税額)に上乗せされる税 */
+export interface IncomeSurtax {
+  /** 所得税額に対する税率の合計(千分率。21 = 2.1%)。上乗せのない年分は 0 */
+  permille: number;
+  /** 上乗せ分の名称(画面・様式イメージの表示用) */
+  name: string;
+  /** 短い呼び名 */
+  shortName: string;
+  /** 所得税と合わせた税額の名称 */
+  totalName: string;
+}
+
+/**
+ * 指定年分の、所得税額への上乗せ(復興特別所得税・防衛特別所得税)。
+ * - 2013〜2026年分: 復興特別所得税 2.1%
+ * - 2027〜2047年分: 防衛特別所得税 1% + 復興特別所得税 1.1%(合計は 2.1% のまま)
+ * - 2048年分以後: 防衛特別所得税 1%(課税期間は「当分の間」で、終わりの年は決まっていない)
+ * 令和8年度改正で、令和9年1月1日以後に生ずる所得から防衛特別所得税が創設され、
+ * 復興特別所得税は税率を 2.1% → 1.1% に下げて、課税期間を令和29年(2047年)分まで10年延長した。
+ * 2027年分以後の申告書の様式は未公表のため、上乗せ分は源泉徴収と同じく合計税率でまとめて計算する
+ * (税目ごとに1円未満を切り捨てる様式になった場合は、1円ずれることがある)。
+ * 税率は浮動小数点の誤差を避けるため千分率の整数で持つ
+ */
+export function incomeSurtaxFor(year: number): IncomeSurtax {
+  if (year >= 2048) {
+    return { permille: 10, name: '防衛特別所得税', shortName: '防衛税', totalName: '所得税及び防衛特別所得税' };
+  }
+  if (year >= 2027) {
+    return {
+      permille: 21,
+      name: '防衛特別所得税及び復興特別所得税',
+      shortName: '防衛・復興税',
+      totalName: '所得税、防衛特別所得税及び復興特別所得税',
+    };
+  }
+  return {
+    permille: year >= 2013 ? 21 : 0,
+    name: '復興特別所得税',
+    shortName: '復興税',
+    totalName: '所得税及び復興特別所得税',
+  };
+}
+
+/** 上乗せ分の税率の表示(「2.1%」など) */
+export function incomeSurtaxRateLabel(year: number): string {
+  return `${incomeSurtaxFor(year).permille / 10}%`;
+}
 
 /**
  * 青色申告特別控除の枠(円)。
@@ -210,7 +256,11 @@ export const INVOICE_TRANSITION_AFTER = 0;
 
 // ── 源泉徴収 ─────────────────────────────────────────────
 
-/** 報酬・料金等の源泉徴収(原稿料・デザイン料など) */
+/**
+ * 報酬・料金等の源泉徴収(原稿料・デザイン料など)。
+ * 税率は所得税率 × 102.1%(2026年まで: 復興特別所得税 2.1% / 2027年から: 防衛特別所得税 1% +
+ * 復興特別所得税 1.1%)。合計税率は変わらないため、2027年以後もこのまま使う
+ */
 export const REWARD_WITHHOLDING = {
   rate: 0.1021,
   rateOver: 0.2042,
@@ -224,17 +274,23 @@ export const REWARD_WITHHOLDING = {
  * - 乙欄(申告書なし・他に主たる給与あり): 月額 monthlyZeroUnder 円未満は 3.063%
  * - 丙欄(日雇い・継続2ヶ月以内): 日額 dailyZeroUnder 円未満は0円
  * これらのライン以上は税額表の参照が必要(自動計算しない)。
- * 令和8年分(2026年1月1日以後に支払う給与)から、基礎控除の見直しに伴い
- * 各ラインが引き上げ(令和7年4月30日財務省告示第122号)。
+ * 基礎控除の見直しに伴い、ラインは年分ごとに引き上げられている:
+ * - 令和7年分(2025年)まで: 月額 88,000円 / 日額 9,300円
+ * - 令和8年分(2026年1月1日以後に支払う給与): 月額 105,000円 / 日額 9,800円
+ *   (令和7年4月30日財務省告示第122号)
+ * - 令和9年分(2027年1月1日以後に支払う給与)から: 月額 111,000円 / 日額 10,000円
+ *   (令和8年4月30日財務省告示第127号。税額には防衛特別所得税 1% と復興特別所得税 1.1% を含む。
+ *    合計 2.1% は変わらないため、乙欄の 3.063% もそのまま)
+ * 翌年分の税額表が告示されたら、ここに年分岐を足す(告示前の年分は直近の表で判定する)
  */
 export function salaryWithholdingFor(year: number): {
   monthlyZeroUnder: number;
   otsuRate: number;
   dailyZeroUnder: number;
 } {
-  return year >= 2026
-    ? { monthlyZeroUnder: 105_000, otsuRate: 0.03063, dailyZeroUnder: 9_800 }
-    : { monthlyZeroUnder: 88_000, otsuRate: 0.03063, dailyZeroUnder: 9_300 };
+  if (year >= 2027) return { monthlyZeroUnder: 111_000, otsuRate: 0.03063, dailyZeroUnder: 10_000 };
+  if (year === 2026) return { monthlyZeroUnder: 105_000, otsuRate: 0.03063, dailyZeroUnder: 9_800 };
+  return { monthlyZeroUnder: 88_000, otsuRate: 0.03063, dailyZeroUnder: 9_300 };
 }
 
 /**

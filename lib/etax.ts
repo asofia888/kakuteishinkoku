@@ -3,14 +3,16 @@ import { IssuerProfile } from './types';
 
 /**
  * e-Tax の申告等データ(.xtx)の生成。
- * 手続: RKO0010「所得税及び復興特別所得税申告」v25.0.0(令和7年分仕様)に、
- * 帳票 KOA210「年分青色申告決算書(一般用)」v11.0 のみを含める
+ * 手続: RKO0010「所得税及び復興特別所得税申告」に、
+ * 帳票 KOA210「年分青色申告決算書(一般用)」のみを含める
  * (全帳票が minOccurs=0 のため決算書のみの申告等データはスキーマ上正規。
  *  freee 等の「決算書のみの e-Tax 用ファイル」と同じ構成)。
+ * 手続・帳票の版は年分ごとに改定されるため、年分ごとの版を ETAX_SPECS に持つ
+ * (令和7年分 = 手続 v25.0.0・帳票 v11.0 / 令和8年分 = 手続 v26.0.0・帳票 v12.0)。
  *
  * 構造は国税庁公開の XML構造設計書・帳票フィールド仕様書・XMLスキーマ
- * (e-tax09.CAB / e-tax19.CAB)に基づき、生成物は公式 XSD
- * (shotoku/RKO0010-250.xsd)での検証を通している。
+ * (e-tax09.CAB / e-tax19.CAB)に基づき、生成物は年分ごとの公式 XSD
+ * (令和7年分は shotoku/RKO0010-250.xsd)での検証を通している。
  * - 帳票要素は shotoku 名前空間(既定)、era/yy/mm/dd・電話・税務署コード等の
  *   内部要素は general 名前空間(gen:)
  * - 年分・氏名・住所などは IT 部に一度だけ置き、帳票側は IDREF で参照する
@@ -21,26 +23,79 @@ const SHO = 'http://xml.e-tax.nta.go.jp/XSD/shotoku';
 const GEN = 'http://xml.e-tax.nta.go.jp/XSD/general';
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
-/** 手続・帳票のバージョン(仕様改定時はここを更新して公式XSDで再検証する) */
-export const ETAX_VERSIONS = { procedure: '25.0.0', koa210: '11.0', it: '1.5' } as const;
+/** 年分ごとの e-Tax 仕様(手続・帳票の版) */
+export interface EtaxSpec {
+  /** 手続 RKO0010 の版 */
+  procedure: string;
+  /** 帳票 KOA210(青色申告決算書・一般用)の版 */
+  koa210: string;
+  /** IT部の版 */
+  it: string;
+  /** 検証に使う公式XMLスキーマ(e-tax19.CAB を展開したツリーの中のパス) */
+  xsd: string;
+  /**
+   * 確定版の仕様がまだ公開されていない年分に、その状況を書く(画面にそのまま出す)。
+   * これがある年分は、ドラフト版の様式で組み立てはできるが、画面からは出力させない
+   */
+  draft?: string;
+}
 
 /**
- * 申告等データを出力できる年分(ETAX_VERSIONS の手続・帳票の版が対応する年分)。
- * 手続 RKO0010 と帳票は年分ごとに改定されるため、別の年分を令和7年分の版で出力すると
+ * 年分 → 仕様。手続 RKO0010 と帳票は年分ごとに改定されるため、別の年分の版で出力すると
  * e-Taxソフトで組み込めないか、年分と様式の食い違ったデータになる。
- * 新しい年分の仕様が公開されたら ETAX_VERSIONS を上げ、公式XSDで再検証してからここに年を足す
+ *
+ * 新しい年分に対応する手順:
+ * 1. 国税庁の仕様書(XML構造設計書・帳票フィールド仕様書)で前の版との差分を確かめ、
+ *    buildKessanshoXtx の様式の分岐を足す
+ * 2. 確定版の XMLスキーマ(e-tax19.CAB)で lib/etax.test.ts の検証を通す
+ *    (ETAX_XSD_DIR に xsd のファイルがあれば、その年分の検証が自動で動く)
+ * 3. 検証できたら draft を外す(画面から出力できるようになる)
+ *
+ * 令和8年分(2026年分)は 2026年10月30日公開のドラフト版にもとづく
+ * (手続 v26.0.0・帳票 KOA210 v12.0・IT部 1.5 はドラフト版の更新履歴・構造設計書・IT部要素一覧で確認)。
+ * 帳票 v12.0 でアプリの出力に関わる変更は、年分・氏名の欄が2ページ目から3ページ目へ移ったこと。
+ * ほかは出力しない欄の変更(1ページ目に届出事項 AMJ00000、4ページ目に AMM00000 の追加、
+ * 追加科目などの繰り返し回数の上限の引き下げ)。確定版で要確認の点:
+ * - XMLスキーマはドラフト版に含まれない(RKO0010-260.xsd は従来の命名からの見込み)
+ * - ドラフト版から確定版までに様式が変わっていないか
  */
-export const ETAX_SUPPORTED_YEARS: readonly number[] = [2025];
+export const ETAX_SPECS: Readonly<Record<number, EtaxSpec>> = {
+  2025: { procedure: '25.0.0', koa210: '11.0', it: '1.5', xsd: 'shotoku/RKO0010-250.xsd' },
+  2026: {
+    procedure: '26.0.0',
+    koa210: '12.0',
+    it: '1.5',
+    xsd: 'shotoku/RKO0010-260.xsd',
+    draft:
+      '国税庁が公開している仕様がドラフト版の段階で、確定版(XMLスキーマを含む)の公開は2026年11月25日、' +
+      'e-Taxソフトでの受付開始は2027年1月4日の予定です',
+  },
+};
+
+/** 申告等データを出力できる年分(確定版の仕様で検証済みの年分) */
+export const ETAX_SUPPORTED_YEARS: readonly number[] = Object.keys(ETAX_SPECS)
+  .map(Number)
+  .filter((y) => !ETAX_SPECS[y].draft);
+
+/** その年分を出力できるときの仕様(出力できない年分は null)。画面の版表示用 */
+export function etaxSpecFor(year: number): EtaxSpec | null {
+  return ETAX_SUPPORTED_YEARS.includes(year) ? ETAX_SPECS[year] : null;
+}
 
 /** その年分の申告等データを出力できないときの理由(出力できれば null) */
 export function etaxYearProblem(year: number): string | null {
   if (ETAX_SUPPORTED_YEARS.includes(year)) return null;
+  const label = `令和${year - 2018}年分(${year}年分)`;
   const supported = ETAX_SUPPORTED_YEARS.map((y) => `令和${y - 2018}年分(${y}年分)`).join('・');
-  const latest = Math.max(...ETAX_SUPPORTED_YEARS);
-  return year > latest
-    ? `令和${year - 2018}年分(${year}年分)の e-Tax 仕様にはまだ対応していません(対応は${supported})。` +
-        '国税庁が新しい年分の仕様を公開したら対応します。それまでは転記ガイド・様式イメージを見ながら、作成コーナーまたは e-Taxソフトで入力してください'
-    : `令和${year - 2018}年分(${year}年分)の e-Tax 仕様には対応していません(対応は${supported})`;
+  const meanwhile = 'それまでは転記ガイド・様式イメージを見ながら、作成コーナーまたは e-Taxソフトで入力してください';
+  const draft = ETAX_SPECS[year]?.draft;
+  if (draft) {
+    return `${label}の申告等データは、まだ出力できません。${draft}。確定版で出力を検証してから対応します。${meanwhile}`;
+  }
+  return year > Math.max(...ETAX_SUPPORTED_YEARS)
+    ? `${label}の e-Tax 仕様にはまだ対応していません(対応は${supported})。` +
+        `国税庁が新しい年分の仕様を公開したら対応します。${meanwhile}`
+    : `${label}の e-Tax 仕様には対応していません(対応は${supported})`;
 }
 
 /**
@@ -259,6 +314,13 @@ export function etaxInputProblems(issuer: IssuerProfile): string[] {
 export function buildKessanshoXtx(d: KessanshoInput): string {
   const iss = d.issuer;
   const year = d.year;
+  const spec = ETAX_SPECS[year];
+  if (!spec) throw new Error(etaxYearProblem(year) ?? `${year}年分の e-Tax 仕様がありません`);
+  // 帳票 v12.0(令和8年分)から、年分・氏名の欄が2ページ目から3ページ目の先頭に移った
+  const headerOnPage3 = Number(spec.koa210) >= 12;
+  /** 氏名欄(フリガナは入力があるときだけ)。値は IT 部にあり、ここは参照だけ */
+  const nameRefs = (wrap: string, kana: string, name: string) =>
+    `<${wrap}>${iss.nameKana ? ref(kana, 'NOZEISHA_NM_KN') : ''}${ref(name, 'NOZEISHA_NM')}</${wrap}>`;
 
   // ── 減価償却: 様式の主表は7行。8行目以降は「次葉合計」欄にまとめる ──
   const depMain = d.depreciation.slice(0, 7);
@@ -379,10 +441,10 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
   const xml =
     `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n` +
     `<DATA xmlns="${SHO}" xmlns:gen="${GEN}" xmlns:rdf="${RDF}" id="DATA">\n` +
-    `<RKO0010 id="RKO0010" VR="${ETAX_VERSIONS.procedure}">\n` +
+    `<RKO0010 id="RKO0010" VR="${spec.procedure}">\n` +
     `<CATALOG id="CATALOG"><rdf:RDF><rdf:Description rdf:about=""><rdf:value>所得税及び復興特別所得税申告</rdf:value></rdf:Description></rdf:RDF></CATALOG>\n` +
     `<CONTENTS id="CONTENTS">\n` +
-    `<IT id="IT" VR="${ETAX_VERSIONS.it}">\n` +
+    `<IT id="IT" VR="${spec.it}">\n` +
     `<ZEIMUSHO ID="ZEIMUSHO"><gen:zeimusho_CD>${esc(iss.zeimushoCode)}</gen:zeimusho_CD>${iss.zeimushoName ? `<gen:zeimusho_NM>${esc(iss.zeimushoName)}</gen:zeimusho_NM>` : ''}</ZEIMUSHO>\n` +
     `<NOZEISHA_ID ID="NOZEISHA_ID">${esc(iss.etaxId)}</NOZEISHA_ID>\n` +
     (iss.nameKana ? `<NOZEISHA_NM_KN ID="NOZEISHA_NM_KN">${esc(iss.nameKana)}</NOZEISHA_NM_KN>\n` : '') +
@@ -394,13 +456,13 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     `<TETSUZUKI ID="TETSUZUKI"><procedure_CD>RKO0010</procedure_CD><procedure_NM>所得税及び復興特別所得税申告</procedure_NM></TETSUZUKI>\n` +
     `<NENBUN ID="NENBUN">${eraYY(year)}</NENBUN>\n` +
     `</IT>\n` +
-    `<KOA210 VR="${ETAX_VERSIONS.koa210}" page="1" softNM="申告スナップ" sakuseiNM="${esc(iss.name)}" sakuseiDay="${esc(d.createdDate)}">\n` +
+    `<KOA210 VR="${spec.koa210}" page="1" softNM="申告スナップ" sakuseiNM="${esc(iss.name)}" sakuseiDay="${esc(d.createdDate)}">\n` +
     // ── 1ページ目: 損益計算書 ──
     `<KOA210-1>\n` +
     ref('AMA00000', 'NENBUN') +
     `<AMB00000>` +
     tag('AMB00010', iss.address) +
-    `<AMB00020>${iss.nameKana ? ref('AMB00030', 'NOZEISHA_NM_KN') : ''}${ref('AMB00040', 'NOZEISHA_NM')}</AMB00020>` +
+    nameRefs('AMB00020', 'AMB00030', 'AMB00040') +
     (iss.tel ? `<AMB00060><AMB00070>${telParts(iss.tel)}</AMB00070></AMB00060>` : '') +
     (iss.shokugyo ? ref('AMB00090', 'SHOKUGYO') : '') +
     (iss.yago ? ref('AMB00100', 'NOZEISHA_YAGO') : '') +
@@ -425,8 +487,7 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     `</KOA210-1>\n` +
     // ── 2ページ目: 月別・給料賃金の内訳・青色申告特別控除 ──
     `<KOA210-2>\n` +
-    ref('AMF00538', 'NENBUN') +
-    `<AMF00540>${iss.nameKana ? ref('AMF00550', 'NOZEISHA_NM_KN') : ''}${ref('AMF00560', 'NOZEISHA_NM')}</AMF00540>\n` +
+    (headerOnPage3 ? '' : `${ref('AMF00538', 'NENBUN')}${nameRefs('AMF00540', 'AMF00550', 'AMF00560')}\n`) +
     `<AMF00580>${monthlyXml}<AMF00970>${tag('AMF00980', d.pl.sales)}${tag('AMF00990', opt(d.pl.purchases))}</AMF00970>` +
     (d.reduced.sales > 0 || d.reduced.purchases > 0
       ? `<AMF00993>${tag('AMF00995', opt(d.reduced.sales))}${tag('AMF00997', opt(d.reduced.purchases))}</AMF00993>`
@@ -442,9 +503,11 @@ export function buildKessanshoXtx(d: KessanshoInput): string {
     rentXml +
     `<AMF01500>${tag('AMF01520', d.pl.net)}${blueXml}</AMF01500>\n` +
     `</KOA210-2>\n` +
-    // ── 3ページ目: 減価償却費の計算 ──
+    // ── 3ページ目: 減価償却費の計算(v12.0 からは先頭に年分・氏名) ──
     (d.depreciation.length > 0
-      ? `<KOA210-3>\n<AMF01590>` +
+      ? `<KOA210-3>\n` +
+        (headerOnPage3 ? `${ref('AMK00000', 'NENBUN')}${nameRefs('AML00000', 'AML00010', 'AML00020')}\n` : '') +
+        `<AMF01590>` +
         depMain.map(depRowXml).join('\n') +
         (depOverflow.length > 0
           ? `<AMF01791>${tag('AMF01792', '次葉合計')}${tag('AMF01793', depSum(depOverflow, (r) => r.dep))}${tag('AMF01795', depSum(depOverflow, (r) => r.dep))}${tag('AMF01796', depSum(depOverflow, (r) => r.business))}${tag('AMF01797', depSum(depOverflow, (r) => r.closing))}</AMF01791>`

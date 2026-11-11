@@ -12,7 +12,7 @@ import { simulateIncomeTax } from '@/lib/incometax';
 import { kessanshoExpenseValues } from '@/lib/kessansho';
 import { buildBalanceSheet } from '@/lib/ledger';
 import { useStore } from '@/lib/store';
-import { BLUE_DEDUCTION_REFORM_YEAR } from '@/lib/taxparams';
+import { BLUE_DEDUCTION_REFORM_YEAR, incomeSurtaxFor, incomeSurtaxRateLabel } from '@/lib/taxparams';
 import { emptyDeduction } from '@/lib/types';
 
 /** 転記用の1行(様式の欄名 → 帳簿の金額) */
@@ -64,6 +64,8 @@ export default function FilingPage() {
   );
   const deduction = store.deductions.find((d) => d.year === year) ?? emptyDeduction(year);
   const tax = useMemo(() => simulateIncomeTax(summary.profit, deduction), [summary.profit, deduction]);
+  // 所得税額への上乗せ分の名称(2027年分から防衛特別所得税が加わる)
+  const surtax = incomeSurtaxFor(year);
   const dep = useMemo(() => yearDepreciationTotals(store.assets, year), [store.assets, year]);
 
   // 月別の売上と仕入(決算書2ページ)
@@ -339,8 +341,8 @@ export default function FilingPage() {
             <Row label="所得から差し引かれる金額 合計" value={tax.totalDeductions} strong />
             <Row label="課税される所得金額(千円未満切捨て)" value={tax.taxable} />
             <Row label="上の金額に対する税額(速算表)" value={tax.incomeTax} />
-            <Row label="復興特別所得税(税額 × 2.1%)" value={tax.reconstructionTax} />
-            <Row label="所得税及び復興特別所得税の額" value={tax.totalTax} strong />
+            <Row label={`${surtax.name}(税額 × ${incomeSurtaxRateLabel(year)})`} value={tax.surtax} />
+            <Row label={`${surtax.totalName}の額`} value={tax.totalTax} strong />
             <Row label="源泉徴収税額" value={tax.withholdingTotal} note={deduction.salaryWithholding > 0 ? '報酬 + 給与' : ''} />
             <Row label="申告納税額(100円未満切捨て)" value={tax.filingTax} />
             <Row label="予定納税額(第1期分・第2期分)" value={deduction.prepaidTax || null} />
