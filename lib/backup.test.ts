@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildBackupJson,
-  isNewerBackup,
-  parseBackupFilesJson,
-  parseBackupJson,
-  sanitizeAppData,
-} from './backup';
+import { BackupAttachment, buildBackupJson, parseBackup, sanitizeAppData } from './backup';
 import { PortableFile } from './files';
 import { AppData, DEFAULT_ISSUER, DEFAULT_TAX_SETTINGS, Transaction } from './types';
 
@@ -106,8 +100,11 @@ const goodData: AppData = {
   ],
 };
 
+/** 帳簿データだけを取り出す */
+const parseBackupJson = (text: string) => parseBackup(text)?.data ?? null;
+
 describe('バックアップの往復(エクスポート → インポート)', () => {
-  it('buildBackupJson の出力を parseBackupJson で完全に復元できる', () => {
+  it('buildBackupJson の出力を parseBackup で完全に復元できる', () => {
     const json = buildBackupJson(goodData);
     expect(parseBackupJson(json)).toEqual(goodData);
   });
@@ -117,16 +114,58 @@ describe('バックアップの往復(エクスポート → インポート)', 
   });
 });
 
-describe('parseBackupJson: 不正な入力', () => {
+describe('parseBackup: 不正な入力', () => {
   it('JSONでない・形が違うものは null', () => {
-    expect(parseBackupJson('こんにちは')).toBeNull();
-    expect(parseBackupJson('{}')).toBeNull();
-    expect(parseBackupJson('123')).toBeNull();
-    expect(parseBackupJson(JSON.stringify({ transactions: '配列でない' }))).toBeNull();
+    expect(parseBackup('こんにちは')).toBeNull();
+    expect(parseBackup('{}')).toBeNull();
+    expect(parseBackup('123')).toBeNull();
+    expect(parseBackup('null')).toBeNull();
+    expect(parseBackup(JSON.stringify({ transactions: '配列でない' }))).toBeNull();
   });
 });
 
-describe('parseBackupFilesJson: 証憑の同梱と復元', () => {
+describe('parseBackup: 証憑の一覧(v8〜。中身は ZIP の別ファイル)', () => {
+  const attachment: BackupAttachment = {
+    id: 'f-1',
+    txId: 'tx-1',
+    name: '領収書.pdf',
+    type: 'application/pdf',
+    size: 5,
+    createdAt: 5000,
+    path: '証憑/2026-01-25_振込_320000円/領収書.pdf',
+  };
+
+  it('attachments 付きバックアップは帳簿と証憑の一覧の両方を往復できる', () => {
+    const parsed = parseBackup(buildBackupJson(goodData, [attachment]))!;
+    expect(parsed.data).toEqual(goodData);
+    expect(parsed.attachments).toEqual([attachment]);
+    expect(parsed.embeddedFiles).toBeNull();
+  });
+
+  it('空の一覧(証憑なしのバックアップ)は、キーなし(証憑に触れない)と区別される', () => {
+    expect(parseBackup(buildBackupJson(goodData, []))!.attachments).toEqual([]);
+    expect(parseBackup(buildBackupJson(goodData))!.attachments).toBeNull();
+  });
+
+  it('壊れた要素(取引IDなし・パスなし)は捨て、ID重複は最初の1件だけ残す', () => {
+    const json = JSON.stringify({
+      app: 'shinkoku-snap',
+      version: 8,
+      data: goodData,
+      attachments: [
+        attachment,
+        { ...attachment, path: '証憑/別のパス.pdf' }, // ID重複 → 捨てる
+        { ...attachment, id: 'f-2', txId: '' },
+        { ...attachment, id: 'f-3', path: '' },
+        { ...attachment, id: 'f-4', path: 123 },
+        'ただの文字列',
+      ],
+    });
+    expect(parseBackup(json)!.attachments).toEqual([attachment]);
+  });
+});
+
+describe('parseBackup: JSON に埋め込まれた証憑(v7 のバックアップ)', () => {
   const goodFile: PortableFile = {
     id: 'f-1',
     txId: 'tx-1',
@@ -136,39 +175,39 @@ describe('parseBackupFilesJson: 証憑の同梱と復元', () => {
     createdAt: 5000,
     data: 'aGVsbG8=', // "hello"
   };
+  /** v7 のアプリが書き出していた形 */
+  const v7 = (files: unknown[]) =>
+    JSON.stringify({ app: 'shinkoku-snap', version: 7, data: goodData, files });
 
-  it('files付きバックアップは帳簿と証憑の両方を往復できる', () => {
-    const json = buildBackupJson(goodData, [goodFile]);
-    expect(parseBackupJson(json)).toEqual(goodData);
-    expect(parseBackupFilesJson(json)).toEqual([goodFile]);
+  it('files 付きバックアップは帳簿と証憑の両方を読み込める', () => {
+    const parsed = parseBackup(v7([goodFile]))!;
+    expect(parsed.data).toEqual(goodData);
+    expect(parsed.embeddedFiles).toEqual([goodFile]);
+    expect(parsed.attachments).toBeNull();
+    expect(parsed.newer).toBe(false);
   });
 
-  it('filesキーがない(v6以前・生データ)は null = 端末の証憑に触れない', () => {
-    expect(parseBackupFilesJson(buildBackupJson(goodData))).toBeNull();
-    expect(parseBackupFilesJson(JSON.stringify(goodData))).toBeNull();
-    expect(parseBackupFilesJson('壊れたJSON')).toBeNull();
+  it('証憑のキーがない(v6以前・生データ)は null = 端末の証憑に触れない', () => {
+    const v6 = JSON.stringify({ app: 'shinkoku-snap', version: 6, data: goodData });
+    expect(parseBackup(v6)!.embeddedFiles).toBeNull();
+    expect(parseBackup(v6)!.attachments).toBeNull();
+    expect(parseBackup(JSON.stringify(goodData))!.embeddedFiles).toBeNull();
   });
 
   it('壊れた証憑(txIdなし・base64不正・上限超過)は捨て、ID重複は最初の1件だけ残す', () => {
     const oversized = 'A'.repeat(Math.ceil((10 * 1024 * 1024 * 4) / 3) + 8);
-    const json = buildBackupJson(goodData, [
+    const json = v7([
       goodFile,
       { ...goodFile, id: 'f-1' }, // ID重複 → 捨てる
       { ...goodFile, id: 'f-2', txId: '' }, // 紐づく取引なし → 捨てる
       { ...goodFile, id: 'f-3', data: 'これはbase64ではない' },
       { ...goodFile, id: 'f-4', data: oversized },
     ]);
-    expect(parseBackupFilesJson(json)).toEqual([goodFile]);
+    expect(parseBackup(json)!.embeddedFiles).toEqual([goodFile]);
   });
 
   it('欠けたメタ情報(名前・種類)は既定値で補う', () => {
-    const json = JSON.stringify({
-      app: 'shinkoku-snap',
-      version: 7,
-      data: goodData,
-      files: [{ txId: 'tx-1', data: 'aGVsbG8=' }],
-    });
-    const files = parseBackupFilesJson(json)!;
+    const files = parseBackup(v7([{ txId: 'tx-1', data: 'aGVsbG8=' }]))!.embeddedFiles!;
     expect(files).toHaveLength(1);
     expect(files[0]).toMatchObject({
       txId: 'tx-1',
@@ -180,23 +219,22 @@ describe('parseBackupFilesJson: 証憑の同梱と復元', () => {
   });
 });
 
-describe('isNewerBackup: バックアップ版数の前方互換チェック', () => {
+describe('parseBackup: バックアップ版数の前方互換チェック(newer)', () => {
   const envelope = (version: unknown, app: unknown = 'shinkoku-snap') =>
-    JSON.stringify({ app, version, exportedAt: '2026-07-17T00:00:00.000Z', data: {} });
+    JSON.stringify({ app, version, exportedAt: '2026-07-17T00:00:00.000Z', data: goodData });
 
   it('このアプリ自身の出力は新しい版と判定しない', () => {
-    expect(isNewerBackup(buildBackupJson(goodData))).toBe(false);
+    expect(parseBackup(buildBackupJson(goodData))!.newer).toBe(false);
   });
 
   it('新しい版のバックアップだけを検知する(古い版は対象外)', () => {
-    expect(isNewerBackup(envelope(999))).toBe(true);
-    expect(isNewerBackup(envelope(1))).toBe(false);
+    expect(parseBackup(envelope(999))!.newer).toBe(true);
+    expect(parseBackup(envelope(1))!.newer).toBe(false);
   });
 
-  it('別アプリのJSON・版数のない生データ・壊れたJSONは対象外', () => {
-    expect(isNewerBackup(envelope(999, 'other-app'))).toBe(false);
-    expect(isNewerBackup(JSON.stringify(goodData))).toBe(false); // localStorage の生データ形式
-    expect(isNewerBackup('壊れたJSON')).toBe(false);
+  it('別アプリのJSON・版数のない生データは対象外', () => {
+    expect(parseBackup(envelope(999, 'other-app'))!.newer).toBe(false);
+    expect(parseBackup(JSON.stringify(goodData))!.newer).toBe(false); // localStorage の生データ形式
   });
 });
 

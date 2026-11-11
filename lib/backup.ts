@@ -30,11 +30,14 @@ import {
 /**
  * バックアップ(JSONエクスポート/インポート)と、外部から来たデータの検証。
  * 保存データ(IndexedDB・localStorage)の読込にも同じ検証を通し、壊れたデータでアプリが落ちないようにする。
+ * 証憑ファイルを含めたバックアップファイル(ZIP)の組み立て・読み込みは lib/backupFile.ts。
  */
 
 const APP_TAG = 'shinkoku-snap';
-// v7: 証憑(files: PortableFile[])をエンベロープに同梱できるようになった
-const BACKUP_VERSION = 7;
+// v7: 証憑を base64 にして JSON に埋め込んでいた(files: PortableFile[])。件数が増えると
+//     JSON が文字列の長さの上限を超えて作れなくなるため、v8 でやめた(読み込みは引き続きできる)
+// v8: 証憑は ZIP の中の別ファイルにし、JSON には一覧(attachments)だけを書く
+const BACKUP_VERSION = 8;
 
 const FUND_IDS: FundId[] = [
   'bank',
@@ -48,73 +51,103 @@ const FUND_IDS: FundId[] = [
 ];
 const TAX_CATEGORIES: TaxCategory[] = ['taxable10', 'taxable8', 'exempt', 'none'];
 
-/** 全データをバックアップ用JSON文字列にする(files を渡すと証憑も同梱する) */
-export function buildBackupJson(data: AppData, files?: PortableFile[]): string {
+/** バックアップの ZIP に別ファイルとして入っている証憑1件(v8〜) */
+export interface BackupAttachment {
+  id: string;
+  /** 紐づく取引ID */
+  txId: string;
+  name: string;
+  type: string;
+  size: number;
+  createdAt: number;
+  /** ZIP 内のパス */
+  path: string;
+}
+
+/**
+ * 全データをバックアップ用JSON文字列にする。
+ * attachments を渡すと「証憑を含むバックアップ」になり、復元時に端末の証憑を置き換える
+ * (空配列 = 証憑なしで置き換え)。省略すると、復元時に端末の証憑には触れない
+ */
+export function buildBackupJson(data: AppData, attachments?: BackupAttachment[]): string {
   return JSON.stringify(
     {
       app: APP_TAG,
       version: BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
       data,
-      // キーの有無で「証憑を含むバックアップか」を判別する(旧版は undefined)
-      ...(files ? { files } : {}),
+      ...(attachments ? { attachments } : {}),
     },
     null,
     2,
   );
 }
 
+export interface ParsedBackup {
+  data: AppData;
+  /**
+   * このアプリより新しい版で作られたバックアップか。新しい版でも読み込み自体は行う
+   * (既知の項目だけ取り込む)が、このアプリが知らない項目は失われるため、復元前の警告に使う
+   */
+  newer: boolean;
+  /** v7: JSON に base64 で埋め込まれた証憑(壊れた要素は捨てたもの)。キーがなければ null */
+  embeddedFiles: PortableFile[] | null;
+  /** v8〜: ZIP に別ファイルで入っている証憑の一覧。キーがなければ null */
+  attachments: BackupAttachment[] | null;
+}
+
 /**
  * バックアップJSON(または localStorage の AppData 形式)を検証して読み込む。
  * データとして解釈できなければ null を返す。
+ * 証憑のキーがどちらもない(v6以前・生データ)ときは、呼び出し側は端末の証憑に触れない。
+ * JSON の解析は1回だけ行う(証憑を埋め込んだ v7 のバックアップは数百MBになることがある)
  */
-export function parseBackupJson(text: string): AppData | null {
+export function parseBackup(text: string): ParsedBackup | null {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && 'data' in parsed) {
-      return sanitizeAppData((parsed as { data: unknown }).data);
-    }
-    return sanitizeAppData(parsed);
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const envelope = parsed as Record<string, unknown>;
+  const data = sanitizeAppData('data' in envelope ? envelope.data : envelope);
+  if (!data) return null;
+  return {
+    data,
+    newer:
+      envelope.app === APP_TAG &&
+      typeof envelope.version === 'number' &&
+      envelope.version > BACKUP_VERSION,
+    embeddedFiles: sanitizeFileList(envelope.files, sanitizePortableFile),
+    attachments: sanitizeFileList(envelope.attachments, sanitizeAttachment),
+  };
 }
 
-/**
- * バックアップJSONに同梱された証憑(files)を検証して取り出す。
- * 証憑キー自体がない(v6以前・生データ)場合は null を返し、
- * 呼び出し側は IndexedDB に触らない(既存の証憑を保つ)。
- * キーがあれば壊れた要素を捨てた配列を返し、呼び出し側は全置き換えする。
- */
-export function parseBackupFilesJson(text: string): PortableFile[] | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object' || !('files' in parsed)) return null;
-    const raw = (parsed as { files: unknown }).files;
-    if (!Array.isArray(raw)) return null;
-    const seen = new Set<string>();
-    const out: PortableFile[] = [];
-    for (const item of raw) {
-      const f = sanitizePortableFile(item);
-      if (!f || seen.has(f.id)) continue;
-      seen.add(f.id);
-      out.push(f);
-    }
-    return out;
-  } catch {
-    return null;
+/** 証憑の一覧を検証する。壊れた要素・ID の重複は捨てる。配列でなければ null(キーなしと同じ扱い) */
+function sanitizeFileList<T extends { id: string }>(
+  raw: unknown,
+  sanitize: (item: unknown) => T | null,
+): T[] | null {
+  if (!Array.isArray(raw)) return null;
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of raw) {
+    const f = sanitize(item);
+    if (!f || seen.has(f.id)) continue;
+    seen.add(f.id);
+    out.push(f);
   }
+  return out;
 }
 
-const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
-
-function sanitizePortableFile(raw: unknown): PortableFile | null {
+/** 証憑の付帯情報(ID・ファイル名・種類など)を検証・補正する。取引ID がなければ null */
+function sanitizeFileMeta(
+  raw: unknown,
+): { id: string; txId: string; name: string; type: string; size: number; createdAt: number } | null {
   if (!raw || typeof raw !== 'object') return null;
-  const f = raw as Partial<PortableFile>;
+  const f = raw as Record<string, unknown>;
   if (typeof f.txId !== 'string' || f.txId === '') return null;
-  if (typeof f.data !== 'string' || f.data === '' || !BASE64_RE.test(f.data)) return null;
-  // base64はバイナリの約4/3倍。上限超のファイルは保存時と同様に受け入れない
-  if (f.data.length > (MAX_FILE_SIZE * 4) / 3 + 4) return null;
   return {
     id: typeof f.id === 'string' && f.id !== '' ? f.id : uid(),
     txId: f.txId,
@@ -123,24 +156,27 @@ function sanitizePortableFile(raw: unknown): PortableFile | null {
     size: typeof f.size === 'number' && Number.isFinite(f.size) ? Math.round(f.size) : 0,
     createdAt:
       typeof f.createdAt === 'number' && Number.isFinite(f.createdAt) ? f.createdAt : Date.now(),
-    data: f.data,
   };
 }
 
-/**
- * バックアップがこのアプリより新しい版で作られたものかを調べる。
- * 新しい版でも読み込み自体は行う(既知の項目だけ取り込む)が、
- * このアプリが知らない項目は失われるため、復元前の警告に使う。
- */
-export function isNewerBackup(text: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object') return false;
-    const p = parsed as { app?: unknown; version?: unknown };
-    return p.app === APP_TAG && typeof p.version === 'number' && p.version > BACKUP_VERSION;
-  } catch {
-    return false;
-  }
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+function sanitizePortableFile(raw: unknown): PortableFile | null {
+  const meta = sanitizeFileMeta(raw);
+  if (!meta) return null;
+  const { data } = raw as { data?: unknown };
+  if (typeof data !== 'string' || data === '' || !BASE64_RE.test(data)) return null;
+  // base64はバイナリの約4/3倍。上限超のファイルは保存時と同様に受け入れない
+  if (data.length > (MAX_FILE_SIZE * 4) / 3 + 4) return null;
+  return { ...meta, data };
+}
+
+function sanitizeAttachment(raw: unknown): BackupAttachment | null {
+  const meta = sanitizeFileMeta(raw);
+  if (!meta) return null;
+  const { path } = raw as { path?: unknown };
+  if (typeof path !== 'string' || path === '') return null;
+  return { ...meta, path };
 }
 
 /**

@@ -1,7 +1,7 @@
-import { buildBackupJson } from './backup';
-import { downloadText } from './csv';
+import { buildBackupFile } from './backupFile';
+import { downloadBlob } from './csv';
 import { LAST_BACKUP_KEY, writeNumber } from './dataSafety';
-import { exportAllFiles, PortableFile } from './files';
+import { listAllFiles, StoredFile } from './files';
 import { today } from './format';
 import { AppData } from './types';
 
@@ -9,21 +9,30 @@ import { AppData } from './types';
 export const BACKUP_DONE_EVENT = 'shinkoku-snap:backup-done';
 
 /**
- * バックアップJSON(証憑を同梱)をダウンロードし、実施日時を記録する。
- * 証憑(IndexedDB)が読み出せない環境でも帳簿だけはバックアップする
+ * バックアップ(証憑があれば ZIP、なければ JSON)をダウンロードし、実施日時を記録する。
+ * 証憑(IndexedDB)が読み出せない環境でも帳簿だけはバックアップする。
+ * 作成に失敗したときは利用者に知らせ、実施日時は記録しない(戻り値 false)
  */
-export async function downloadBackupFile(data: AppData): Promise<void> {
-  let files: PortableFile[] = [];
+export async function downloadBackupFile(data: AppData): Promise<boolean> {
   try {
-    files = await exportAllFiles();
+    let files: StoredFile[] | null = null;
+    try {
+      files = await listAllFiles();
+    } catch {
+      alert('証憑の読み出しに失敗したため、帳簿データのみのバックアップを作成します。');
+    }
+    const { blob, extension, skipped } = await buildBackupFile(data, files);
+    downloadBlob(`申告スナップ_バックアップ_${today()}.${extension}`, blob);
+    if (skipped.length > 0) {
+      alert(
+        `次の証憑${skipped.length}件は読み出せなかったため、バックアップに含まれていません。\n${skipped.slice(0, 10).join('\n')}${skipped.length > 10 ? '\nほか' : ''}`,
+      );
+    }
   } catch {
-    alert('証憑の読み出しに失敗したため、帳簿データのみのバックアップを作成します。');
+    alert('バックアップの作成に失敗しました。ブラウザを再読み込みしてから、もう一度お試しください。');
+    return false;
   }
-  downloadText(
-    `申告スナップ_バックアップ_${today()}.json`,
-    buildBackupJson(data, files),
-    'application/json',
-  );
   writeNumber(LAST_BACKUP_KEY, Date.now());
   window.dispatchEvent(new Event(BACKUP_DONE_EVENT));
+  return true;
 }

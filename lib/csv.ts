@@ -364,11 +364,16 @@ export function transactionsToCsv(transactions: Transaction[]): string {
 
 /** テキストをファイルとしてダウンロードさせる */
 export function downloadText(filename: string, text: string, mime = 'text/csv'): void {
-  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+  downloadBlob(filename, new Blob([text], { type: `${mime};charset=utf-8` }));
+}
+
+/** Blob をファイルとしてダウンロードさせる */
+export function downloadBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  // 大きなファイル(証憑入りのバックアップ)は保存に時間がかかるため、URL はしばらく残してから解放する
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

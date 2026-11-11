@@ -32,7 +32,7 @@ export default function SaveErrorBanner() {
           </span>
           <span>
             元のデータはブラウザ内に退避してあります(消えていません)。まず退避データを保存し、
-            バックアップJSONをお持ちならダッシュボードの「データ管理」から復元してください。
+            バックアップファイルをお持ちならダッシュボードの「データ管理」から復元してください。
           </span>
           <button
             type="button"

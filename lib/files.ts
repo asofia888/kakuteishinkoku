@@ -5,7 +5,8 @@ import { uid } from './types';
  * 画像・PDFは localStorage(約5MB)に入らないため IndexedDB に保存する。
  * 取引ID(txId)に紐づけ、電子帳簿保存法の検索要件(日付・金額・取引先)は
  * 取引一覧の検索・フィルタで満たす。
- * バックアップJSONには base64(PortableFile)にして同梱・復元できる(v7〜)。
+ * バックアップには ZIP の中の別ファイルとして同梱・復元できる(v8〜。lib/backupFile.ts)。
+ * v7 のバックアップ(JSON に base64 で埋め込む形式)も復元だけはできる。
  */
 
 const DB_NAME = 'shinkoku-snap-files';
@@ -45,6 +46,15 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
+/** 書き込みトランザクションの完了を待つ(中断もエラーとして扱う) */
+function transactionDone(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('保存が中断されました'));
+  });
+}
+
 /** 1ファイルあたりの保存上限(これ以上は保存せず、呼び出し側でユーザーに知らせる) */
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -74,10 +84,7 @@ export async function addFiles(txId: string, files: File[]): Promise<AddFilesRes
       blob: f,
     } satisfies StoredFile);
   }
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  await transactionDone(tx);
   db.close();
   return { added: accepted.length, skipped };
 }
@@ -95,21 +102,30 @@ export async function deleteFile(id: string): Promise<void> {
   const db = await openDb();
   const tx = db.transaction(STORE, 'readwrite');
   tx.objectStore(STORE).delete(id);
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  await transactionDone(tx);
   db.close();
 }
 
-/** 取引IDごとの添付件数(一覧のバッジ表示用) */
+/**
+ * 取引IDごとの添付件数(一覧のバッジ表示用)。
+ * 取引ID の索引のキーだけを走査し、ファイル本体のレコードは読み出さない
+ */
 export async function countsByTx(): Promise<Map<string, number>> {
   const db = await openDb();
-  const store = db.transaction(STORE, 'readonly').objectStore(STORE);
-  const rows = (await requestToPromise(store.getAll())) as StoredFile[];
-  db.close();
+  const index = db.transaction(STORE, 'readonly').objectStore(STORE).index('txId');
   const counts = new Map<string, number>();
-  for (const r of rows) counts.set(r.txId, (counts.get(r.txId) ?? 0) + 1);
+  await new Promise<void>((resolve, reject) => {
+    const req = index.openKeyCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return resolve();
+      const txId = String(cursor.key);
+      counts.set(txId, (counts.get(txId) ?? 0) + 1);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
   return counts;
 }
 
@@ -122,9 +138,38 @@ export async function totalUsage(): Promise<{ count: number; size: number }> {
   return { count: rows.length, size: rows.reduce((s, r) => s + r.size, 0) };
 }
 
-// ── バックアップへの同梱(base64での持ち運び)──
+// ── バックアップへの同梱・復元 ──
 
-/** バックアップJSONに同梱する形の証憑1件(Blob を base64 文字列にしたもの) */
+/** 全証憑(バックアップ用)。Blob は中身への参照で、読むまでメモリには載らない */
+export async function listAllFiles(): Promise<StoredFile[]> {
+  const db = await openDb();
+  const store = db.transaction(STORE, 'readonly').objectStore(STORE);
+  const rows = (await requestToPromise(store.getAll())) as StoredFile[];
+  db.close();
+  return rows.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/**
+ * 証憑を渡されたもので全置き換えする(既存の証憑は削除)。
+ * 帳簿(AppData)を丸ごと置き換える復元とセットで使う前提。
+ * 削除と保存は1つのトランザクションなので、失敗したときは元の証憑が残る
+ */
+export async function replaceAllFiles(files: StoredFile[]): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readwrite');
+  const store = tx.objectStore(STORE);
+  store.clear();
+  for (const f of files) store.put(f);
+  await transactionDone(tx);
+  db.close();
+}
+
+/** 証憑をすべて削除する(「全データを削除」用) */
+export async function clearAllFiles(): Promise<void> {
+  await replaceAllFiles([]);
+}
+
+/** v7 のバックアップJSONに埋め込まれていた形の証憑1件(Blob を base64 文字列にしたもの) */
 export interface PortableFile {
   id: string;
   txId: string;
@@ -136,77 +181,17 @@ export interface PortableFile {
   data: string;
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    // data:URL の先頭(data:...;base64,)を除いた本体だけを返す
-    r.onload = () => resolve(String(r.result).split(',')[1] ?? '');
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(blob);
-  });
-}
-
-function base64ToBlob(data: string, type: string): Blob {
-  const bin = atob(data);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type });
-}
-
-/** 全証憑をバックアップ同梱用(base64)に書き出す */
-export async function exportAllFiles(): Promise<PortableFile[]> {
-  const db = await openDb();
-  const store = db.transaction(STORE, 'readonly').objectStore(STORE);
-  const rows = (await requestToPromise(store.getAll())) as StoredFile[];
-  db.close();
-  const out: PortableFile[] = [];
-  for (const r of rows) {
-    out.push({
-      id: r.id,
-      txId: r.txId,
-      name: r.name,
-      type: r.type,
-      size: r.size,
-      createdAt: r.createdAt,
-      data: await blobToBase64(r.blob),
-    });
+/** base64 の証憑(v7 のバックアップ)を保存用の形に戻す。base64 が壊れていれば null */
+export function portableToStored(f: PortableFile): StoredFile | null {
+  try {
+    const bin = atob(f.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: f.type });
+    return { id: f.id, txId: f.txId, name: f.name, type: f.type, size: blob.size, createdAt: f.createdAt, blob };
+  } catch {
+    return null;
   }
-  return out;
-}
-
-/**
- * バックアップの証憑で全置き換えする(既存の証憑は削除)。復元した件数を返す。
- * 帳簿(AppData)を丸ごと置き換える復元とセットで使う前提。
- */
-export async function restoreAllFiles(files: PortableFile[]): Promise<number> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readwrite');
-  const store = tx.objectStore(STORE);
-  store.clear();
-  let restored = 0;
-  for (const f of files) {
-    try {
-      const blob = base64ToBlob(f.data, f.type);
-      store.put({
-        id: f.id,
-        txId: f.txId,
-        name: f.name,
-        type: f.type,
-        size: blob.size,
-        createdAt: f.createdAt,
-        blob,
-      } satisfies StoredFile);
-      restored++;
-    } catch {
-      // base64が壊れている1件のために全体を失敗させない(件数差は呼び出し側で表示される)
-    }
-  }
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
-  return restored;
 }
 
 /** 存在しない取引に紐づく証憑(取引削除後の残骸)を削除し、削除件数を返す */
@@ -222,10 +207,7 @@ export async function deleteOrphans(validTxIds: Set<string>): Promise<number> {
       removed++;
     }
   }
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  await transactionDone(tx);
   db.close();
   return removed;
 }

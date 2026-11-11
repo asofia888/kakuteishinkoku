@@ -1,8 +1,11 @@
+import { readFile, writeFile } from 'node:fs/promises';
 import { expect, Page, test } from '@playwright/test';
+import { foreignZip, ForeignZipEntry } from '../lib/testing/foreignZip';
+import { openZip } from '../lib/zip';
 
 /**
  * データの出入りと保全にかかわる動線のE2E:
- * CSV取込 → プレビュー → 一覧反映 / バックアップDL → 全削除 → 復元 /
+ * CSV取込 → プレビュー → 一覧反映 / バックアップDL → 全削除 → 復元(証憑つきの ZIP・圧縮し直した ZIP も) /
  * 印刷CSS(帳簿が白紙にならない) / 証憑のサイズ超過警告。
  * 本番ビルド(basePath 付き含む)に対して実行する。
  */
@@ -70,6 +73,121 @@ test('バックアップをダウンロード → 全削除 → 復元でデー�
   await chooser.setFiles(backupFile);
   await expect(page.getByText('売上(収入)金額 年間合計').first()).toBeVisible();
   await expect(page.getByText(/月次推移/).first()).toBeVisible();
+});
+
+/** 端末(IndexedDB)に保存されている証憑の件数 */
+function storedReceiptCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open('shinkoku-snap-files');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const req = db.transaction('files').objectStore('files').count();
+          req.onerror = () => reject(req.error);
+          req.onsuccess = () => {
+            db.close();
+            resolve(req.result);
+          };
+        };
+      }),
+  );
+}
+
+const RECEIPT = Buffer.from('%PDF-1.4 e2e receipt');
+
+/** サンプルデータの取引に証憑を1件添付し、バックアップ(ZIP)をダウンロードする。保存先のパスを返す */
+async function downloadBackupWithReceipt(page: Page): Promise<string> {
+  await page.goto('./');
+  await page.getByRole('button', { name: 'サンプルデータを読み込む' }).first().click();
+  await expect(page.getByText('売上(収入)金額 年間合計').first()).toBeVisible();
+
+  // 取引に証憑を添付する
+  await nav(page, /取引一覧/);
+  const modal = page.locator('.fixed.inset-0');
+  await page.getByTitle('証憑(領収書・請求書PDF)を添付・表示').first().click();
+  await modal
+    .locator('input[type="file"]')
+    .setInputFiles({ name: 'receipt-e2e.pdf', mimeType: 'application/pdf', buffer: RECEIPT });
+  await expect(modal.getByRole('button', { name: 'receipt-e2e.pdf' })).toBeVisible();
+  await modal.getByRole('button', { name: '閉じる' }).click();
+
+  // 証憑があるときのバックアップは ZIP(証憑を JSON に埋め込まない)
+  await nav(page, /ダッシュボード/);
+  await expect(page.getByText(/証憑ファイル: 1件/)).toBeVisible();
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /バックアップをダウンロード/ }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/\.zip$/);
+  return download.path();
+}
+
+/** 全削除 → 帳簿だけでなく証憑も端末から消える(回帰: 以前は証憑が残り、消す手段もなかった) */
+async function deleteAllData(page: Page) {
+  await page.getByRole('button', { name: '全データを削除' }).click();
+  await expect(page.getByRole('button', { name: 'サンプルデータを読み込む' }).first()).toBeVisible();
+  await expect.poll(() => storedReceiptCount(page)).toBe(0);
+}
+
+/** バックアップから復元し、帳簿と証憑(同じ取引に、同じ中身のまま)が戻ったことを確かめる */
+async function restoreAndExpectReceipt(page: Page, backupFile: string) {
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: /バックアップから復元/ }).first().click(),
+  ]);
+  await chooser.setFiles(backupFile);
+  await expect(page.getByText('売上(収入)金額 年間合計').first()).toBeVisible();
+  await expect(page.getByText(/証憑ファイル: 1件/)).toBeVisible();
+
+  await nav(page, /取引一覧/);
+  await page.getByTitle('証憑(領収書・請求書PDF)を添付・表示').first().click();
+  await expect(page.locator('.fixed.inset-0').getByRole('button', { name: 'receipt-e2e.pdf' })).toBeVisible();
+  const restored = await page.evaluate(
+    () =>
+      new Promise<{ type: string; text: string }>((resolve, reject) => {
+        const open = indexedDB.open('shinkoku-snap-files');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const req = open.result.transaction('files').objectStore('files').getAll();
+          req.onerror = () => reject(req.error);
+          req.onsuccess = () => {
+            const blob = (req.result[0] as { blob: Blob }).blob;
+            void blob.text().then((text) => resolve({ type: blob.type, text }));
+          };
+        };
+      }),
+  );
+  expect(restored).toEqual({ type: 'application/pdf', text: RECEIPT.toString() });
+}
+
+test('証憑つきバックアップ: ZIP でダウンロード → 全削除で証憑も消える → ZIP から復元で証憑が戻る', async ({ page }) => {
+  const backupFile = await downloadBackupWithReceipt(page);
+  await deleteAllData(page);
+  // ZIP をそのまま指定して復元
+  await restoreAndExpectReceipt(page, backupFile);
+});
+
+test('証憑つきバックアップ: 展開してから圧縮し直した ZIP からも復元できる', async ({ page }, testInfo) => {
+  const backupFile = await downloadBackupWithReceipt(page);
+
+  // Mac の Safari はダウンロードした ZIP を自動で展開する。展開後のフォルダを OS の機能で
+  // 圧縮し直した ZIP(フォルダ入り・Deflate 圧縮・濁点が分かれたファイル名)を再現する
+  const original = await openZip(new Blob([new Uint8Array(await readFile(backupFile))]));
+  expect(original.map((e) => e.path)).toContain('backup.json');
+  const entries: ForeignZipEntry[] = [];
+  for (const e of original) {
+    entries.push({
+      path: `申告スナップ_バックアップ/${e.path}`.normalize('NFD'),
+      data: new Uint8Array(await (await e.blob()).arrayBuffer()),
+    });
+  }
+  const rezipped = testInfo.outputPath('rezipped.zip');
+  await writeFile(rezipped, new Uint8Array(await foreignZip(entries, { descriptor: true }).arrayBuffer()));
+
+  await deleteAllData(page);
+  await restoreAndExpectReceipt(page, rezipped);
 });
 
 test('印刷: 帳簿ページは白紙にならず、請求書プレビューでは請求書だけが印刷される', async ({ page }) => {

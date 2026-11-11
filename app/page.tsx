@@ -14,8 +14,8 @@ import {
   summaryToCsv,
   transactionsOfYear,
 } from '@/lib/aggregate';
-import { isNewerBackup, parseBackupFilesJson, parseBackupJson } from '@/lib/backup';
 import { BACKUP_DONE_EVENT, downloadBackupFile } from '@/lib/backupDownload';
+import { readBackupFile } from '@/lib/backupFile';
 import {
   BACKUP_REMIND_DAYS,
   daysSince,
@@ -24,7 +24,7 @@ import {
   storagePersisted,
 } from '@/lib/dataSafety';
 import { downloadText, transactionsToCsv } from '@/lib/csv';
-import { deleteOrphans, formatBytes, restoreAllFiles, totalUsage } from '@/lib/files';
+import { clearAllFiles, deleteOrphans, formatBytes, replaceAllFiles, totalUsage } from '@/lib/files';
 import { today, yen } from '@/lib/format';
 import { computeInvoiceTotals } from '@/lib/invoice';
 import { useStore } from '@/lib/store';
@@ -34,9 +34,11 @@ export default function DashboardPage() {
   const [year, setYear] = useState(() => new Date().getFullYear());
   const restoreRef = useRef<HTMLInputElement>(null);
   const [fileUsage, setFileUsage] = useState<{ count: number; size: number } | null>(null);
-  useEffect(() => {
-    void totalUsage().then(setFileUsage);
-  }, []);
+  // 証憑(IndexedDB)が使えない環境では件数を出さないだけにする
+  const refreshFileUsage = () => void totalUsage().then(setFileUsage, () => {});
+  useEffect(refreshFileUsage, []);
+  // バックアップの作成・復元は証憑の読み書きで時間がかかることがあるため、その間はボタンを止める
+  const [busy, setBusy] = useState<'backup' | 'restore' | null>(null);
 
   const years = useMemo(
     () => availableYears(store.transactions, new Date().getFullYear()),
@@ -83,44 +85,87 @@ export default function DashboardPage() {
   };
 
   // 証憑(IndexedDB)も同梱し、実施日時を記録する(催促バナー・下の状態表示が更新される)
-  const downloadBackup = () => downloadBackupFile(store.exportData());
+  const downloadBackup = async () => {
+    setBusy('backup');
+    try {
+      await downloadBackupFile(store.exportData());
+    } finally {
+      setBusy(null);
+    }
+  };
 
-  const onRestoreFile = async (file: File) => {
-    const text = await file.text();
-    const data = parseBackupJson(text);
-    // 同じファイルを選び直しても onChange が発火するようクリアしておく
-    if (restoreRef.current) restoreRef.current.value = '';
-    if (!data) {
-      alert('バックアップファイルとして読み取れませんでした。「申告スナップ」でダウンロードしたJSONファイルをご指定ください。');
+  const restoreFrom = async (file: File) => {
+    const backup = await readBackupFile(file);
+    if (!backup) {
+      alert(
+        'バックアップファイルとして読み取れませんでした。「申告スナップ」でダウンロードしたファイル(ZIP または JSON)をご指定ください。ZIP が展開されてフォルダになっている場合は、そのフォルダを ZIP に圧縮し直したものを指定できます。',
+      );
       return;
     }
-    // 新しいバージョンのアプリで作られたバックアップは、このアプリが知らない項目が
-    // 取り込まれず失われる可能性があるため、置き換える前に注意を挟む
-    const newerWarn = isNewerBackup(text)
-      ? '\n\n注意: このバックアップは新しいバージョンの申告スナップで作成されています。このバージョンで読み取れない項目があると、その部分は失われます。'
-      : '';
-    // 証憑キーの有無で挙動を分ける: v7以降は同梱の証憑で全置き換え、
-    // v6以前(キーなし)は端末の証憑に触れない(残骸は孤立掃除で消せる)
-    const files = parseBackupFilesJson(text);
+    const { data, files } = backup;
+    // 証憑を含むバックアップ(v7以降)は端末の証憑を全置き換えし、
+    // 含まないもの(v6以前など)は端末の証憑に触れない(残骸は孤立掃除で消せる)
     const fileNote = files !== null ? `・証憑${files.length}件` : '';
+    const warnings = [
+      // 新しいバージョンのアプリで作られたバックアップは、このアプリが知らない項目が
+      // 取り込まれず失われる可能性があるため、置き換える前に注意を挟む
+      backup.newer &&
+        'このバックアップは新しいバージョンの申告スナップで作成されています。このバージョンで読み取れない項目があると、その部分は失われます。',
+      backup.broken > 0 && `証憑${backup.broken}件は壊れているため復元されません。`,
+      backup.missing > 0 &&
+        `このファイルには証憑${backup.missing}件の中身が入っていません(証憑は ZIP ファイルの中にあります)。帳簿データだけを復元し、この端末の証憑はそのまま残します。証憑も復元するには、ダウンロードした ZIP ファイルをそのまま指定してください(ZIP が展開されてフォルダになっている場合は、そのフォルダを ZIP に圧縮し直したもの)。`,
+    ]
+      .filter((w): w is string => typeof w === 'string')
+      .map((w) => `\n\n注意: ${w}`)
+      .join('');
     if (
-      confirm(
-        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件${fileNote})で現在のデータをすべて置き換えます。${newerWarn}\nよろしいですか?`,
+      !confirm(
+        `バックアップ(取引${data.transactions.length}件・ルール${data.rules.length}件・按分設定${data.anbunSettings.length}件${fileNote})で現在のデータをすべて置き換えます。${warnings}\nよろしいですか?`,
       )
     ) {
-      store.restoreData(data);
-      if (files !== null) {
-        try {
-          const restored = await restoreAllFiles(files);
-          void totalUsage().then(setFileUsage);
-          if (restored < files.length) {
-            alert(`証憑の一部(${files.length - restored}件)は壊れていたため復元できませんでした。`);
-          }
-        } catch {
-          alert('帳簿は復元しましたが、証憑の復元に失敗しました。ブラウザのストレージ設定をご確認ください。');
-        }
-      }
+      return;
     }
+    store.restoreData(data);
+    if (files !== null) {
+      try {
+        await replaceAllFiles(files);
+      } catch {
+        alert(
+          '帳簿は復元しましたが、証憑の復元に失敗しました。端末の空き容量とブラウザのストレージ設定をご確認のうえ、もう一度復元してください。',
+        );
+      }
+      refreshFileUsage();
+    }
+  };
+
+  const onRestoreFile = async (file: File) => {
+    // 同じファイルを選び直しても onChange が発火するようクリアしておく
+    if (restoreRef.current) restoreRef.current.value = '';
+    setBusy('restore');
+    try {
+      await restoreFrom(file);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteAllFiles = async () => {
+    try {
+      await clearAllFiles();
+    } catch {
+      alert('証憑ファイルの削除に失敗しました。ブラウザを再読み込みしてから、もう一度お試しください。');
+    }
+    refreshFileUsage();
+  };
+
+  // 証憑(別の IndexedDB)も一緒に消す。帳簿だけ消すと、取引に紐づかない証憑が端末に残り続ける
+  const deleteAll = async () => {
+    const fileNote = fileUsage && fileUsage.count > 0 ? `・証憑ファイル${fileUsage.count}件` : '';
+    if (!confirm(`すべての取引・ルール・按分設定${fileNote}を削除します。元に戻せません。よろしいですか?`)) {
+      return;
+    }
+    store.clearAll();
+    await deleteAllFiles();
   };
 
   const yearTxs = transactionsOfYear(store.transactions, year);
@@ -137,7 +182,7 @@ export default function DashboardPage() {
       <input
         ref={restoreRef}
         type="file"
-        accept=".json,application/json"
+        accept=".zip,.json,application/zip,application/json"
         className="hidden"
         aria-label="バックアップファイルを選択"
         onChange={(e) => {
@@ -183,11 +228,28 @@ export default function DashboardPage() {
             <button
               type="button"
               className={btn.secondary}
+              disabled={busy !== null}
               onClick={() => restoreRef.current?.click()}
             >
-              バックアップから復元
+              {busy === 'restore' ? '復元中…' : 'バックアップから復元'}
             </button>
           </div>
+          {fileUsage && fileUsage.count > 0 && (
+            <p className="mt-4 text-xs text-slate-500">
+              📎 この端末に証憑ファイルが{fileUsage.count}件({formatBytes(fileUsage.size)})残っています。
+              <button
+                type="button"
+                className="ml-2 font-medium text-rose-600 underline"
+                onClick={() => {
+                  if (confirm(`この端末に残っている証憑ファイル${fileUsage.count}件を削除します。元に戻せません。よろしいですか?`)) {
+                    void deleteAllFiles();
+                  }
+                }}
+              >
+                証憑ファイルを削除
+              </button>
+            </p>
+          )}
         </EmptyState>
       )}
 
@@ -222,7 +284,8 @@ export default function DashboardPage() {
             <Alert tone="warning">
               🗓 <strong className="mx-1">{year + 1}年1月に入金された売上が{slip.length}件(合計 {yen(slipTotal)})</strong>
               あります。{year}年12月までの仕事の対価であれば、正しくは{year}年分の売上です(期ズレ)。
-              12月付(発生日)の売上として手入力し、1月の入金行は「対象外(プライベート)」に変更してください。
+              12月末日付で決済手段を「売掛金(発生記録)」にした売上を手入力し、1月の入金行は科目を
+              <strong>「売掛金の回収」</strong>に変更してください(入金行を「対象外」にすると、預金残高が帳簿と合わなくなります)。
             </Alert>
           )}
 
@@ -473,15 +536,21 @@ export default function DashboardPage() {
           <Card title="データ管理(バックアップ)">
             <DataSafetyStatus />
             <div className="flex flex-wrap items-center gap-3">
-              <button type="button" className={btn.primary} onClick={downloadBackup}>
-                ⬇ バックアップをダウンロード(JSON)
+              <button
+                type="button"
+                className={btn.primary}
+                disabled={busy !== null}
+                onClick={() => void downloadBackup()}
+              >
+                {busy === 'backup' ? '作成中…' : '⬇ バックアップをダウンロード'}
               </button>
               <button
                 type="button"
                 className={btn.secondary}
+                disabled={busy !== null}
                 onClick={() => restoreRef.current?.click()}
               >
-                ⬆ バックアップから復元
+                {busy === 'restore' ? '復元中…' : '⬆ バックアップから復元'}
               </button>
               <button type="button" className={btn.secondary} onClick={loadDemo}>
                 サンプルデータを読み込む
@@ -489,11 +558,8 @@ export default function DashboardPage() {
               <button
                 type="button"
                 className={`${btn.secondary} !text-rose-600`}
-                onClick={() => {
-                  if (confirm('すべての取引・ルール・按分設定を削除します。よろしいですか?')) {
-                    store.clearAll();
-                  }
-                }}
+                disabled={busy !== null}
+                onClick={() => void deleteAll()}
               >
                 全データを削除
               </button>
@@ -509,7 +575,7 @@ export default function DashboardPage() {
                     const ids = new Set(store.transactions.map((t) => t.id));
                     void deleteOrphans(ids).then((n) => {
                       alert(n > 0 ? `取引に紐づかない証憑を${n}件削除しました。` : '整理が必要な証憑はありませんでした。');
-                      void totalUsage().then(setFileUsage);
+                      refreshFileUsage();
                     });
                   }}
                 >
@@ -521,7 +587,8 @@ export default function DashboardPage() {
               ※データはこの端末のブラウザ内(IndexedDB)にのみ保存されています。ブラウザのデータ消去や
               端末の故障で帳簿が失われるため、<strong className="text-slate-500">定期的にバックアップをダウンロード</strong>
               して保管してください(帳簿・書類は原則7年の保存義務があります)。
-              証憑ファイル(📎)もバックアップJSONに含まれます(復元時はバックアップの証憑で置き換え)。
+              証憑ファイル(📎)もバックアップに含まれます。証憑があるときのバックアップは、帳簿データと証憑を
+              まとめた ZIP ファイルです(復元時は ZIP をそのまま指定。端末の証憑はバックアップの証憑で置き換え)。
             </p>
           </Card>
         </div>
